@@ -1,0 +1,132 @@
+-------------- Bunnyhop timer by blacky ---------------2.0 Changes (Not yet available):
+- The new timer is now only being made available to KawaiiClan due to the leaking of previous versions.
+- Added CS:GO Compatibility.
+- The code has been converted to the new SourceMod transitional syntax.
+- Made a button plugin that can be used to spawn buttons that start or end timers, tie buttons to start or end timers, or disable buttons that come with the map that start or end timers. (Currently broken)
+- Made a more suitable checkpoints plugin for climb servers.
+- Made it so every single freestyle zone can have its own unique settings for each style.
+- The required admin flags for every admin related feature in the timer can be changed in a config.
+- Several admin features can be accessed through the !admin menu.
+- Players can change several more settings, and all of it will be in a menu opened with the !settings command.
+- Made a plugin that can save your location/timer when you go to spectate or disconnect from the server. (WIP)
+- Complete remake of the ranking system. Ranks will recalculate live and there is a tier system in order to better calculate the points players will receive.
+- Slight changes to the CSS UI.
+- Recoded the replay bots. Only one bot to save player slots. Type !replay to watch a record. Replay bots save much faster now thanks to Mev.
+- Changed how the chat rank system works. You can have multiple chat ranks depending on the server's config and any chat rank can award custom chat privileges if specified in the config. Type !chatrank to see all ranks you have.
+- Added the !rr (Recent Records) command. It let's you see the most recent records on the server and it has advanced filtering options.
+- Added the overtake system so if you have lost any records since you were last connected to the server it should notify you when you join. (WIP)
+- Styles can have different airacceleration settings thanks to Mehis.
+- Created backwards style.
+- There is currently no !stats page and you can't view the record info when selecting a time in the !wr menu. It's on my todo list to get these and much better than older versions.
+- Created a Tool Assisted Speedrun (TAS) mode. It can be used on any style allowed in the style config. Times are recorded separately and no points are rewarded for TAS times. Type !tas to use it.
+
+1.8.3 Changes:
+- Even more bug fixes.
+
+1.8.2 Changes:
+- More bug fixes.
+
+1.8.1 Changes:
+- Fix for bugs created in 1.8 version.
+
+1.8 Changes:
+- Reworked styles so server owners can make their own styles inside a config.
+- !mapsdone shows your time and position on maps.
+- !top will now load instantly, will require a map change to update.
+- Created !topwr command. Shows the rankings of who has the most map records
+- Created !stats command. Shows various player statistics for the specified player.
+
+1.7.1 Changes:
+- Hotfix for bugs created in 1.7 version.
+
+1.7 Changes:
+- Completely remade the zones plugin, allowing much more control over zones.
+- Finish messages now show the map rank a player gets.
+- Started adding CS:GO compatibility, not working yet.
+- Another (possibly useless) attempt at making zones load faster.
+- The world record shows up on the right when spectating the corresponding replay bot.
+- Fixed all the name change bugs.
+- Added advanced options for map finish sounds.
+
+1.6.1 Changes:
+- Hotfix for bugs created in 1.6 version.
+- Fixed half-sideways.
+
+1.6 Changes:
+- Added stamina and half-sideways styles.
+- Fixed the !hud and record sounds bugs.
+- Fixed the bug where ghosts kept dropping their weapons.
+- Added a velocity meter to the start zone message.
+
+1.5.2 Changes: 
+- Made zones load faster hopefully.
+- bot_dont_shoot 1 is now possible without sv_cheats.
+- Added more server cvars.
+- Added custom chat notifications.
+- Fixed duplicate map id creations in the database.
+- Hopefully fixed big memory leak.
+- Made a command to recalculate all points in the database.
+- Added the !hud command so players can customize their hud.
+
+1.5 Changes: 
+- New replay bots for sideways, w-only, and bonus.
+- Made timer more extensive.
+- Minor changes to simple things.
+
+1.4 Changes:
+- Fixed minor bugs.
+- Ghost weapon can be controlled by server owner.
+- Player buttons are now recorded for the ghost to play back when they get the record.
+ 
+1.3.1 Changes: 
+- Fixed a memory leak that may have caused the server to frequently crash.
+
+1.3 Changes:
+- Fixed a bug where unplayable maps would show on things like !mapsleft.
+- Map time left shows in the right where spectators and your best times show.
+- Turning music off in the !sounds menu will turn off music that's already playing.
+- Added commands !rankings !ranks and !chatranks to see a list of all the chat ranks.
+- When you are in a free style zone it will say (FS) in the hint text (bottom center)
+- Implemented all/dead-chat inside the timer so an external plugin is unnecessary.
+- Added commands !end and !endb so you can teleport to the end zones.
+- Fixed a bug where the ghost would not overwrite but append on the previous ghost.
+- Fixed a bug where the incorrect position you have on the map would show.
+- You can nominate maps through things like !mapsleft.
+- Modified how chat ranks work a bit.
+- Fixed a bug to cheat with the !speed command on some maps that slow your speed.
+- Made some SQL related commands load faster.
+ 
+1.2 Changes: 
+- Fixed ghost not saving sometimes when someone gets the new top time (hopefully).
+- Fixed possible lag caused by timer around when userid's reach the 1000s.
+- Properly escaped names (including custom chat names/messages) for SQL insertion
+
+1.1 Changes:
+- Remade custom chat ranks to work better. sm_cchelp for more info.
+- Player info should load faster allowing zones to load quicker.
+- !keys no longer shows what direction a player is turning.
+- Mapsdone shows number of maps done in the title.
+
+beta 7 Changes: 
+- Fixed a bug where ghost wouldn't delete.
+- Fixed WR sounds.
+- Added chat ranks/custom chat names. !cchelp for more info
+- Mapsleft shows number of maps left in title.
+- Expanded on !time command. !time @3 will show who has #3 on the map.
+- !keys now shows what direction a player is turning.
+
+beta 6 Changes:
+- Fixed a bug on sideways and w-only.
+- Added new commands !speed !setspeed !normalspeed !fast and !slow.
+- Added new commands !lowgrav and !normalgrav.
+- Added new commands !pause and !resume.
+- Improved logging.
+- Added this changelog feature.
+- Added the !search command so you can search for specific commands in the !thelp list.
+- Made some SQL related commands load faster.
+- Added separate join messages for admins and non-admins.
+- Fixed a bug on the right side where it doesn't show the correct 'Best:' time.
+- Fixed !specs/!speclist/!specinfo bug.
+- Fixed a bug to cheat times.
+- The ghost should appear in every map now.
+- Fixed a bug where ghost jitters when it is paused.
