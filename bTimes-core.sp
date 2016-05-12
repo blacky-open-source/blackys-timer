@@ -4,34 +4,41 @@
 
 public Plugin:myinfo = 
 {
-	name = "[bTimes] core",
+	name = "[bTimes] Core",
 	author = "blacky",
 	description = "The root of bTimes",
 	version = VERSION,
 	url = "http://steamcommunity.com/id/blaackyy/"
 }
 
-#include <bTimes-timer>
-#include <bTimes-ranks>
-#include <bTimes-zones>
 #include <sourcemod>
 #include <sdktools>
 #include <scp>
+#include <smlib/clients>
+#include <bTimes-timer>
+
+enum
+{
+	GameType_CSS,
+	GameType_CSGO
+};
+
+new g_GameType;
 
 new 	Handle:g_hCommandList,
 	bool:g_bCommandListLoaded;
 
-new Handle:g_DB = INVALID_HANDLE;
+new Handle:g_DB;
 
 new 	String:g_sMapName[64],
 	g_PlayerID[MAXPLAYERS+1],
-	Handle:g_MapList;
+	Handle:g_MapList,
+	Handle:g_hDbMapNameList,
+	Handle:g_hDbMapIdList,
+	bool:g_bDbMapsLoaded,
+	Float:g_fMapStart;
 	
 new	Float:g_fSpamTime[MAXPLAYERS+1];
-	
-// Playtimes
-new	Float:g_JoinStart[MAXPLAYERS+1];
-new	Float:g_MapStart;
 	
 // Chat
 new 	String:g_msg_start[128] = {""};
@@ -40,15 +47,40 @@ new 	String:g_msg_textcol[128] = {"\x01"};
 
 // Forwards
 new	Handle:g_fwdMapIDPostCheck,
+	Handle:g_fwdMapListLoaded,
 	Handle:g_fwdPlayerIDLoaded;
 
-// UserID/PlayerID array
-new	Handle:g_hTriePlayerID;
+// PlayerID retrieval data
+new	Handle:g_hPlayerID,
+	Handle:g_hUser,
+	bool:g_bPlayerListLoaded;
+
+// Cvars
+new	Handle:g_hChangeLogURL;
 
 public OnPluginStart()
-{
-	// Connect
+{	
+	decl String:sGame[64];
+	GetGameFolderName(sGame, sizeof(sGame));
+	
+	if(StrEqual(sGame, "cstrike"))
+		g_GameType = GameType_CSS;
+	else if(StrEqual(sGame, "csgo"))
+		g_GameType = GameType_CSGO;
+	else
+		SetFailState("This timer does not support this game (%s)", sGame);
+	
+	// Database
 	DB_Connect();
+	
+	// Cvars
+	if(g_GameType == GameType_CSS)
+	{
+		g_hChangeLogURL = CreateConVar("timer_changelog", "http://textuploader.com/14vc/raw", "The URL in to the timer changelog, in case the current URL breaks for some reason.");
+		RegConsoleCmdEx("sm_changes", SM_Changes, "See the changes in the newer timer version.");
+	}
+	
+	AutoExecConfig(true, "core", "timer");
 	
 	// Events
 	HookEvent("player_changename", Event_PlayerChangeName, EventHookMode_Pre);
@@ -57,26 +89,29 @@ public OnPluginStart()
 	// Commands
 	RegConsoleCmdEx("sm_mostplayed", SM_TopMaps, "Displays the most played maps");
 	RegConsoleCmdEx("sm_lastplayed", SM_LastPlayed, "Shows the last played maps");
+	RegConsoleCmdEx("sm_playtime", SM_Playtime, "Shows the people who played the most.");
 	RegConsoleCmdEx("sm_thelp", SM_THelp, "Shows the timer commands.");
 	RegConsoleCmdEx("sm_commands", SM_THelp, "Shows the timer commands.");
 	RegConsoleCmdEx("sm_search", SM_Search, "Search the command list for the given string of text.");
-	RegConsoleCmdEx("sm_changes", SM_Changes, "See the changes in the newer timer version.");
 	
-	// Init userid array	
-	g_hTriePlayerID = CreateTrie();
+	// Makes FindTarget() work properly
+	LoadTranslations("common.phrases");
 }
 
-// Create natives
 public APLRes:AskPluginLoad2(Handle:myself, bool:late, String:error[], err_max)
 {
 	CreateNative("GetClientID", Native_GetClientID);
-	CreateNative("GetPlaytime", Native_GetPlaytime);
 	CreateNative("IsSpamming", Native_IsSpamming);
 	CreateNative("SetIsSpamming", Native_SetIsSpamming);
 	CreateNative("RegisterCommand", Native_RegisterCommand);
+	CreateNative("GetMapIdFromMapName", Native_GetMapIdFromMapName);
+	CreateNative("GetMapNameFromMapId", Native_GetMapNameFromMapId);
+	CreateNative("GetNameFromPlayerID", Native_GetNameFromPlayerID);
+	CreateNative("GetSteamIDFromPlayerID", Native_GetSteamIDFromPlayerID);
 	
 	g_fwdMapIDPostCheck = CreateGlobalForward("OnMapIDPostCheck", ET_Event);
 	g_fwdPlayerIDLoaded = CreateGlobalForward("OnPlayerIDLoaded", ET_Event, Param_Cell);
+	g_fwdMapListLoaded  = CreateGlobalForward("OnDatabaseMapListLoaded", ET_Event);
 	
 	return APLRes_Success;
 }
@@ -85,7 +120,12 @@ public OnMapStart()
 {
 	GetCurrentMap(g_sMapName, sizeof(g_sMapName));
 	
-	g_MapStart = GetEngineTime();
+	g_fMapStart = GetEngineTime();
+	
+	if(g_MapList != INVALID_HANDLE)
+	{
+		CloseHandle(g_MapList);
+	}
 	
 	g_MapList = ReadMapList();
 	
@@ -102,43 +142,18 @@ public OnMapEnd()
 public OnClientDisconnect(client)
 {
 	// Save player's play time
-	if(!IsFakeClient(client))
+	if(g_PlayerID[client] != 0 && !IsFakeClient(client))
 	{
 		DB_SavePlaytime(client);
 	}
 	
 	// Reset the playerid for the client index
-	g_PlayerID[client] = 0;
-}
-
-public bool:OnClientConnect(client)
-{
-	g_PlayerID[client] = 0;
-	
-	new userid = GetClientUserId(client);
-	decl String:sUserID[32];
-	Format(sUserID, sizeof(sUserID), "%d", userid);
-	
-	// Check for any existing player ids for this player with their userid
-	if(GetTrieValue(g_hTriePlayerID, sUserID, g_PlayerID[client]))
-	{
-		// Start forward to notify other plugins that a playerid was found for the client
-		Call_StartForward(g_fwdPlayerIDLoaded);
-		Call_PushCell(client);
-		Call_Finish();
-	}
-	
-	return true;
-}
-
-public OnClientPutInServer(client)
-{
-	g_JoinStart[client] = GetEngineTime();
+	g_PlayerID[client]   = 0;
 }
 
 public OnClientAuthorized(client)
 {
-	if(!IsFakeClient(client) && (g_PlayerID[client] == 0))
+	if(!IsFakeClient(client) && g_bPlayerListLoaded == true)
 	{
 		CreatePlayerID(client);
 	}
@@ -149,43 +164,73 @@ public OnTimerChatChanged(MessageType, String:Message[])
 	if(MessageType == 0)
 	{
 		Format(g_msg_start, sizeof(g_msg_start), Message);
-		ReplaceString(g_msg_start, sizeof(g_msg_start), "^", "\x07", false);
+		ReplaceMessage(g_msg_start, sizeof(g_msg_start));
 	}
 	else if(MessageType == 1)
 	{
 		Format(g_msg_varcol, sizeof(g_msg_varcol), Message);
-		ReplaceString(g_msg_varcol, sizeof(g_msg_varcol), "^", "\x07", false);
+		ReplaceMessage(g_msg_varcol, sizeof(g_msg_varcol));
 	}
 	else if(MessageType == 2)
 	{
 		Format(g_msg_textcol, sizeof(g_msg_textcol), Message);
-		ReplaceString(g_msg_textcol, sizeof(g_msg_textcol), "^", "\x07", false);
+		ReplaceMessage(g_msg_textcol, sizeof(g_msg_textcol));
+	}
+}
+
+ReplaceMessage(String:message[], maxlength)
+{
+	if(g_GameType == GameType_CSS)
+	{
+		ReplaceString(message, maxlength, "^", "\x07", false);
+	}
+	else if(g_GameType == GameType_CSGO)
+	{
+		ReplaceString(message, maxlength, "^A", "\x0A");
+		ReplaceString(message, maxlength, "^1", "\x01");
+		ReplaceString(message, maxlength, "^2", "\x02");
+		ReplaceString(message, maxlength, "^3", "\x03");
+		ReplaceString(message, maxlength, "^4", "\x04");
+		ReplaceString(message, maxlength, "^5", "\x05");
+		ReplaceString(message, maxlength, "^6", "\x06");
+		ReplaceString(message, maxlength, "^7", "\x07");
 	}
 }
 
 public Action:Event_PlayerTeam_Post(Handle:event, const String:name[], bool:dontBroadcast)
 {
-	new client = GetClientOfUserId(GetEventInt(event, "userid"));
+	new client  = GetClientOfUserId(GetEventInt(event, "userid"));
 	
 	if(0 < client <= MaxClients)
 	{
 		if(IsClientInGame(client))
 		{
-			if(GetEventInt(event, "oldteam") == 0)
-			{
-				PrintColorText(client, "%s%sType in console %ssm_thelp %sfor a command list. %ssm_changes%s to see the changelog.",
-					g_msg_start,
-					g_msg_textcol,
-					g_msg_varcol,
-					g_msg_textcol,
-					g_msg_varcol,
-					g_msg_textcol);
+			new oldteam = GetEventInt(event, "oldteam");
+			if(oldteam == 0)
+			{	
+				if(g_GameType == GameType_CSS)
+				{
+					PrintColorText(client, "%s%sType %s!thelp%s for a command list. %s!changes%s to see the changelog.",
+						g_msg_start,
+						g_msg_textcol,
+						g_msg_varcol,
+						g_msg_textcol,
+						g_msg_varcol,
+						g_msg_textcol);
+				}
+				else if(g_GameType == GameType_CSGO)
+				{
+					PrintColorText(client, "%s%sType %s!thelp%s for a command list.",
+						g_msg_start,
+						g_msg_textcol,
+						g_msg_varcol,
+						g_msg_textcol);
+				}
 			}
 		}
 	}
-	
-	return Plugin_Continue;
 }
+
 
 public Action:OnChatMessage(&author, Handle:recipients, String:name[], String:message[])
 {
@@ -193,19 +238,30 @@ public Action:OnChatMessage(&author, Handle:recipients, String:name[], String:me
 	{
 		return Plugin_Stop;
 	}
-	else if(StrEqual(message, "spawn") || StrEqual(message, "restart") || StrEqual(message, "respawn"))
+	
+	/*
+	decl String:sType[16], String:sStyle[32], String:sCommand[48];
+	for(new Type; Type < MAX_TYPES; Type++)
 	{
-		FakeClientCommand(author, "sm_r");
-		return Plugin_Stop;
+		GetTypeAbbr(Type, sType, sizeof(sType), true);
+		for(new Style; Style < MAX_STYLES; Style++)
+		{
+			GetStyleAbbr(Style, sStyle, sizeof(sStyle), true);
+			
+			Format(sCommand, sizeof(sCommand), "%srank%s", sType, sStyle);
+			
+			if(StrEqual(message, sCommand, true))
+			{
+				FakeClientCommand(author, "sm_%s", message);
+				return Plugin_Stop;
+			}
+		}
 	}
-	else if(StrEqual(message, "rank") || StrEqual(message, "brank") || StrEqual(message, "rankw") || StrEqual(message, "ranksw") || StrEqual(message, "rankn"))
-	{
-		FakeClientCommand(author, "sm_%s", message);
-		return Plugin_Stop;
-	}
+	*/
 	
 	return Plugin_Continue;
 }
+
 
 public Action:SM_TopMaps(client, args)
 {
@@ -217,6 +273,7 @@ public Action:SM_TopMaps(client, args)
 		Format(query, sizeof(query), "SELECT MapName, MapPlaytime FROM maps ORDER BY MapPlaytime DESC");
 		SQL_TQuery(g_DB, TopMaps_Callback, query, client);
 	}
+	
 	return Plugin_Handled;
 }
 
@@ -233,7 +290,7 @@ public TopMaps_Callback(Handle:owner, Handle:hndl, String:error[], any:client)
 			if(rows > 0)
 			{
 				decl String:mapname[64], String:timeplayed[32], String:display[128], iTime;
-				for(new i=0, j=0; i<rows; i++)
+				for(new i, j; i < rows; i++)
 				{
 					SQL_FetchRow(hndl);
 					iTime = SQL_FetchInt(hndl, 1);
@@ -266,14 +323,14 @@ public TopMaps_Callback(Handle:owner, Handle:hndl, String:error[], any:client)
 
 public Menu_TopMaps(Handle:menu, MenuAction:action, param1, param2)
 {
-	if (action == MenuAction_Select)
+	if(action == MenuAction_Select)
 	{
 		decl String:info[32];
 		GetMenuItem(menu, param2, info, sizeof(info));
 		
 		FakeClientCommand(param1, "sm_nominate %s", info);
 	}
-	else if (action == MenuAction_End)
+	else if(action == MenuAction_End)
 		CloseHandle(menu);
 }
 
@@ -287,6 +344,7 @@ public Action:SM_LastPlayed(client, argS)
 		Format(query, sizeof(query), "SELECT MapName, LastPlayed FROM maps ORDER BY LastPlayed DESC");
 		SQL_TQuery(g_DB, LastPlayed_Callback, query, client);
 	}
+	
 	return Plugin_Handled;
 }
 
@@ -342,7 +400,7 @@ public Menu_LastPlayed(Handle:menu, MenuAction:action, param1, param2)
 		
 		FakeClientCommand(param1, "sm_nominate %s", info);
 	}
-	else if (action == MenuAction_End)
+	else if(action == MenuAction_End)
 		CloseHandle(menu);
 }
 
@@ -350,39 +408,31 @@ public Action:Event_PlayerChangeName(Handle:event, const String:name[], bool:don
 {
 	new client = GetClientOfUserId(GetEventInt(event, "userid"));
 	
-	decl String:sName[MAX_NAME_LENGTH];
-	GetEventString(event, "newname", sName, sizeof(sName));
-	
-	decl String:sEscapedName[2 * MAX_NAME_LENGTH + 1];
-	SQL_LockDatabase(g_DB);
-	SQL_EscapeString(g_DB, sName, sEscapedName, sizeof(sEscapedName));
-	SQL_UnlockDatabase(g_DB);
-	
-	decl String:sAuth[32];
-	GetClientAuthString(client, sAuth, sizeof(sAuth));
-	
-	decl String:query[128];
-	Format(query, sizeof(query), "UPDATE players SET User='%s' WHERE SteamID='%s'", sEscapedName, sAuth);
-	SQL_TQuery(g_DB, Event_PlayerChangeName_Callback, query);
-}
-
-public Event_PlayerChangeName_Callback(Handle:owner, Handle:hndl, String:error[], any:data)
-{
-	if(hndl == INVALID_HANDLE)
+	if(!IsFakeClient(client) && g_PlayerID[client] != 0)
 	{
-		LogError(error);
+		decl String:sNewName[MAX_NAME_LENGTH];
+		GetEventString(event, "newname", sNewName, sizeof(sNewName));
+		UpdateName(client, sNewName);
 	}
 }
 
 public Action:SM_Changes(client, args)
 {
-	ShowMOTDPanel(client, "Timer changelog", "http://textuploader.com/14vc/raw", MOTDPANEL_TYPE_URL);
+	if(g_GameType == GameType_CSS)
+	{
+		decl String:sChangeLog[PLATFORM_MAX_PATH];
+		GetConVarString(g_hChangeLogURL, sChangeLog, PLATFORM_MAX_PATH);
+		
+		ShowMOTDPanel(client, "Timer changelog", sChangeLog, MOTDPANEL_TYPE_URL);
+		
+		return Plugin_Handled;
+	}
 	
-	return Plugin_Handled;
+	return Plugin_Continue;
 }
 
 DB_Connect()
-{
+{	
 	if(g_DB != INVALID_HANDLE)
 		CloseHandle(g_DB);
 	
@@ -403,7 +453,7 @@ DB_Connect()
 		SQL_TQuery(g_DB, DB_Connect_Callback, query);
 		
 		// Create zones table
-		Format(query, sizeof(query), "CREATE TABLE IF NOT EXISTS zones(MapID INTEGER, Type INTEGER, point00 REAL, point01 REAL, point02 REAL, point10 REAL, point11 REAL, point12 REAL)");
+		Format(query, sizeof(query), "CREATE TABLE IF NOT EXISTS zones(RowID INTEGER NOT NULL AUTO_INCREMENT, MapID INTEGER, Type INTEGER, point00 REAL, point01 REAL, point02 REAL, point10 REAL, point11 REAL, point12 REAL, flags INTEGER, PRIMARY KEY (RowID))");
 		SQL_TQuery(g_DB, DB_Connect_Callback, query);
 		
 		// Create players table
@@ -413,6 +463,9 @@ DB_Connect()
 		// Create times table
 		Format(query, sizeof(query), "CREATE TABLE IF NOT EXISTS times(rownum INTEGER NOT NULL AUTO_INCREMENT, MapID INTEGER, Type INTEGER, Style INTEGER, PlayerID INTEGER, Time REAL, Jumps INTEGER, Strafes INTEGER, Points REAL, Timestamp INTEGER, Sync REAL, SyncTwo REAL, PRIMARY KEY (rownum))");
 		SQL_TQuery(g_DB, DB_Connect_Callback, query);
+		
+		LoadPlayers();
+		LoadDatabaseMapList();
 	}
 }
 
@@ -424,22 +477,132 @@ public DB_Connect_Callback(Handle:owner, Handle:hndl, const String:error[], any:
 	}
 }
 
-CreateCurrentMapID()
+LoadDatabaseMapList()
 {	
+	decl String:query[256];
+	FormatEx(query, sizeof(query), "SELECT MapID, MapName FROM maps");
+	SQL_TQuery(g_DB, LoadDatabaseMapList_Callback, query);
+}
+
+public LoadDatabaseMapList_Callback(Handle:owner, Handle:hndl, String:error[], any:data)
+{
+	if(hndl != INVALID_HANDLE)
+	{
+		if(g_bDbMapsLoaded == false)
+		{
+			g_hDbMapNameList = CreateArray(ByteCountToCells(64));
+			g_hDbMapIdList   = CreateArray();
+		}
+		
+		decl String:sMapName[64];
+		
+		while(SQL_FetchRow(hndl))
+		{
+			SQL_FetchString(hndl, 1, sMapName, sizeof(sMapName));
+			
+			PushArrayString(g_hDbMapNameList, sMapName);
+			PushArrayCell(g_hDbMapIdList, SQL_FetchInt(hndl, 0));
+		}
+		
+		Call_StartForward(g_fwdMapListLoaded);
+		Call_Finish();
+	}
+	else
+	{
+		LogError(error);
+	}
+}
+
+LoadPlayers()
+{
+	g_hPlayerID = CreateArray(ByteCountToCells(32));
+	g_hUser     = CreateArray(ByteCountToCells(MAX_NAME_LENGTH));
+	
+	decl String:query[128];
+	FormatEx(query, sizeof(query), "SELECT SteamID, PlayerID, User FROM players");
+	SQL_TQuery(g_DB, LoadPlayers_Callback, query);
+}
+
+public LoadPlayers_Callback(Handle:owner, Handle:hndl, String:error[], any:data)
+{
+	if(hndl != INVALID_HANDLE)
+	{
+		decl String:sName[32], String:sAuth[32];
+		
+		new RowCount = SQL_GetRowCount(hndl), PlayerID, iSize;
+		for(new Row; Row < RowCount; Row++)
+		{
+			SQL_FetchRow(hndl);
+			
+			SQL_FetchString(hndl, 0, sAuth, sizeof(sAuth));
+			PlayerID = SQL_FetchInt(hndl, 1);
+			SQL_FetchString(hndl, 2, sName, sizeof(sName));
+			
+			iSize = GetArraySize(g_hPlayerID);
+			
+			if(PlayerID >= iSize)
+			{
+				ResizeArray(g_hPlayerID, PlayerID + 1);
+				ResizeArray(g_hUser, PlayerID + 1);
+			}
+			
+			SetArrayString(g_hPlayerID, PlayerID, sAuth);
+			SetArrayString(g_hUser, PlayerID, sName);
+		}
+		
+		g_bPlayerListLoaded = true;
+		
+		for(new client = 1; client <= MaxClients; client++)
+		{
+			if(IsClientConnected(client) && !IsFakeClient(client))
+			{
+				if(IsClientAuthorized(client))
+				{
+					CreatePlayerID(client);
+				}
+			}
+		}
+	}
+	else
+	{
+		LogError(error);
+	}
+}
+
+CreateCurrentMapID()
+{
+	new Handle:pack = CreateDataPack();
+	WritePackString(pack, g_sMapName);
+	
 	decl String:query[512];
 	FormatEx(query, sizeof(query), "INSERT INTO maps (MapName) SELECT * FROM (SELECT '%s') AS tmp WHERE NOT EXISTS (SELECT MapName FROM maps WHERE MapName = '%s') LIMIT 1",
 		g_sMapName,
 		g_sMapName);
-	SQL_TQuery(g_DB, DB_CreateCurrentMapID_Callback1, query);
+	SQL_TQuery(g_DB, DB_CreateCurrentMapID_Callback, query, pack);
 }
 
-public DB_CreateCurrentMapID_Callback1(Handle:owner, Handle:hndl, const String:error[], any:data)
+public DB_CreateCurrentMapID_Callback(Handle:owner, Handle:hndl, const String:error[], any:data)
 {
 	if(hndl != INVALID_HANDLE)
 	{
 		if(SQL_GetAffectedRows(hndl) > 0)
 		{
-			LogMessage("MapID for %s created (%d)", g_sMapName, SQL_GetInsertId(hndl));
+			ResetPack(data);
+			
+			decl String:sMapName[64];
+			ReadPackString(data, sMapName, sizeof(sMapName));
+			
+			new MapID = SQL_GetInsertId(hndl);
+			LogMessage("MapID for %s created (%d)", sMapName, hndl);
+			
+			if(g_bDbMapsLoaded == false)
+			{
+				g_hDbMapNameList = CreateArray(ByteCountToCells(64));
+				g_hDbMapIdList   = CreateArray();
+			}
+			
+			PushArrayString(g_hDbMapNameList, sMapName);
+			PushArrayCell(g_hDbMapIdList, MapID);
 		}
 		
 		Call_StartForward(g_fwdMapIDPostCheck);
@@ -449,57 +612,88 @@ public DB_CreateCurrentMapID_Callback1(Handle:owner, Handle:hndl, const String:e
 	{
 		LogError(error);
 	}
+	
+	CloseHandle(data);
 }
 
 CreatePlayerID(client)
-{
+{	
 	decl String:sName[MAX_NAME_LENGTH];
 	GetClientName(client, sName, sizeof(sName));
-	
-	decl String:sEscapedName[(2 * MAX_NAME_LENGTH) + 1];
-	SQL_LockDatabase(g_DB);
-	SQL_EscapeString(g_DB, sName, sEscapedName, sizeof(sEscapedName));
-	SQL_UnlockDatabase(g_DB);
 	
 	decl String:sAuth[32];
 	GetClientAuthString(client, sAuth, sizeof(sAuth));
 	
-	decl String:query[512];
-	FormatEx(query, sizeof(query), "INSERT INTO players (SteamID, User) SELECT * FROM (SELECT '%s', '%s') AS tmp WHERE NOT EXISTS (SELECT SteamID FROM players WHERE SteamID = '%s') LIMIT 1",
-		sAuth,
-		sEscapedName,
-		sAuth);
-	SQL_TQuery(g_DB, DB_CreatePlayerID2_Callback1, query, GetClientUserId(client));
+	new idx = FindStringInArray(g_hPlayerID, sAuth);
+	if(idx != -1)
+	{
+		g_PlayerID[client] = idx;
+		
+		decl String:sOldName[MAX_NAME_LENGTH];
+		GetArrayString(g_hUser, idx, sOldName, sizeof(sOldName));
+		
+		if(!StrEqual(sName, sOldName))
+		{
+			UpdateName(client, sName);
+		}
+		
+		Call_StartForward(g_fwdPlayerIDLoaded);
+		Call_PushCell(client);
+		Call_Finish();
+	}
+	else
+	{
+		decl String:sEscapeName[(2 * MAX_NAME_LENGTH) + 1];
+		SQL_LockDatabase(g_DB);
+		SQL_EscapeString(g_DB, sName, sEscapeName, sizeof(sEscapeName));
+		SQL_UnlockDatabase(g_DB);
+		
+		new Handle:pack = CreateDataPack();
+		WritePackCell(pack, GetClientUserId(client));
+		WritePackString(pack, sAuth);
+		WritePackString(pack, sName);
+		
+		decl String:query[128];
+		FormatEx(query, sizeof(query), "INSERT INTO players (SteamID, User) VALUES ('%s', '%s')",
+			sAuth,
+			sEscapeName);
+		SQL_TQuery(g_DB, CreatePlayerID_Callback, query, pack);
+	}
 }
 
-public DB_CreatePlayerID2_Callback1(Handle:owner, Handle:hndl, const String:error[], any:userid)
+public CreatePlayerID_Callback(Handle:owner, Handle:hndl, const String:error[], any:data)
 {
 	if(hndl != INVALID_HANDLE)
 	{
-		new client = GetClientOfUserId(userid);
+		ResetPack(data);
+		new client = GetClientOfUserId(ReadPackCell(data));
+		
+		decl String:sAuth[32];
+		ReadPackString(data, sAuth, sizeof(sAuth));
+		
+		decl String:sName[MAX_NAME_LENGTH];
+		ReadPackString(data, sName, sizeof(sName));
+		
+		new PlayerID = SQL_GetInsertId(hndl);
+		
+		new iSize = GetArraySize(g_hPlayerID);
+		
+		if(PlayerID >= iSize)
+		{
+			ResizeArray(g_hPlayerID, PlayerID + 1);
+			ResizeArray(g_hUser, PlayerID + 1);
+		}
+		
+		SetArrayString(g_hPlayerID, PlayerID, sAuth);
+		SetArrayString(g_hUser, PlayerID, sName);
 		
 		if(client != 0)
 		{
-			if(SQL_GetAffectedRows(hndl) == 1)
-			{
-				g_PlayerID[client] = SQL_GetInsertId(hndl);
-				
-				// Start forward to notify other plugins that a player's id was found
-				Call_StartForward(g_fwdPlayerIDLoaded);
-				Call_PushCell(client);
-				Call_Finish();
-			}
-			else
-			{
-				decl String:sAuth[32];
-				GetClientAuthString(client, sAuth, sizeof(sAuth));
-				
-				decl String:query[512];
-				FormatEx(query, sizeof(query), "SELECT PlayerID FROM players WHERE SteamID = '%s'",
-					sAuth);
-					
-				SQL_TQuery(g_DB, DB_CreatePlayerID2_Callback2, query, GetClientUserId(client));
-			}
+			g_PlayerID[client] = PlayerID;
+			
+			Call_StartForward(g_fwdPlayerIDLoaded);
+			Call_PushCell(client);
+			Call_Finish();
 		}
 	}
 	else
@@ -508,31 +702,26 @@ public DB_CreatePlayerID2_Callback1(Handle:owner, Handle:hndl, const String:erro
 	}
 }
 
-public DB_CreatePlayerID2_Callback2(Handle:owner, Handle:hndl, const String:error[], any:userid)
+UpdateName(client, const String:sName[])
 {
-	if(hndl != INVALID_HANDLE)
-	{
-		new client = GetClientOfUserId(userid);
-		
-		if(client != 0)
-		{
-			if(SQL_GetRowCount(hndl) > 0)
-			{
-				SQL_FetchRow(hndl);
-				
-				g_PlayerID[client] = SQL_FetchInt(hndl, 0);
-				
-				// Start forward to notify other plugins that a player's id was found
-				Call_StartForward(g_fwdPlayerIDLoaded);
-				Call_PushCell(client);
-				Call_Finish();
-			}
-		}
-	}
-	else
-	{
+	SetArrayString(g_hUser, g_PlayerID[client], sName);
+	
+	decl String:sEscapeName[(2 * MAX_NAME_LENGTH) + 1];
+	SQL_LockDatabase(g_DB);
+	SQL_EscapeString(g_DB, sName, sEscapeName, sizeof(sEscapeName));
+	SQL_UnlockDatabase(g_DB);
+	
+	decl String:query[128];
+	FormatEx(query, sizeof(query), "UPDATE players SET User='%s' WHERE PlayerID=%d",
+		sEscapeName,
+		g_PlayerID[client]);
+	SQL_TQuery(g_DB, UpdateName_Callback, query);
+}
+
+public UpdateName_Callback(Handle:owner, Handle:hndl, const String:error[], any:userid)
+{
+	if(hndl == INVALID_HANDLE)
 		LogError(error);
-	}
 }
 
 public Native_GetClientID(Handle:plugin, numParams)
@@ -542,39 +731,26 @@ public Native_GetClientID(Handle:plugin, numParams)
 
 DB_SavePlaytime(client)
 {
-	new PlayerID = GetPlayerID(client);
-	if(PlayerID != 0)
+	if(IsClientInGame(client))
 	{
-		new Playtime = RoundToFloor(GetEngineTime() - g_JoinStart[client]);
-		
-		decl String:query[128];
-		Format(query, sizeof(query), "UPDATE players SET Playtime=(SELECT Playtime FROM (SELECT * FROM players) AS x WHERE PlayerID=%d)+%d WHERE PlayerID=%d",
-			PlayerID,
-			Playtime,
-			PlayerID);
-			
-		SQL_TQuery(g_DB, DB_SavePlaytime_Callback, query);
+		new PlayerID = GetPlayerID(client);
+		if(PlayerID != 0)
+		{		
+			decl String:query[128];
+			Format(query, sizeof(query), "UPDATE players SET Playtime=(SELECT Playtime FROM (SELECT * FROM players) AS x WHERE PlayerID=%d)+%d WHERE PlayerID=%d",
+				PlayerID,
+				RoundToFloor(GetClientTime(client)),
+				PlayerID);
+				
+			SQL_TQuery(g_DB, DB_SavePlaytime_Callback, query);
+		}
 	}
 }
 
 public DB_SavePlaytime_Callback(Handle:owner, Handle:hndl, String:error[], any:data)
 {
 	if(hndl == INVALID_HANDLE)
-	{
 		LogError(error);
-	}
-}
-
-public Native_GetPlaytime(Handle:plugin, numParams)
-{
-	new client = GetNativeCell(1);
-	
-	if(g_PlayerID[client] != 0)
-	{
-		return _:(GetEngineTime()-g_JoinStart[client]);
-	}
-	
-	return _:0.0;
 }
 
 DB_SaveMapPlaytime()
@@ -583,7 +759,7 @@ DB_SaveMapPlaytime()
 
 	Format(query, sizeof(query), "UPDATE maps SET MapPlaytime=(SELECT MapPlaytime FROM (SELECT * FROM maps) AS x WHERE MapName='%s' LIMIT 0, 1)+%d WHERE MapName='%s'",
 		g_sMapName,
-		RoundToFloor(GetEngineTime()-g_MapStart),
+		RoundToFloor(GetEngineTime()-g_fMapStart),
 		g_sMapName);
 		
 	SQL_TQuery(g_DB, DB_SaveMapPlaytime_Callback, query);
@@ -592,9 +768,7 @@ DB_SaveMapPlaytime()
 public DB_SaveMapPlaytime_Callback(Handle:owner, Handle:hndl, String:error[], any:data)
 {
 	if(hndl == INVALID_HANDLE)
-	{
 		LogError(error);
-	}
 }
 
 DB_SetMapLastPlayed()
@@ -614,6 +788,126 @@ public DB_SetMapLastPlayed_Callback(Handle:owner, Handle:hndl, String:error[], a
 		LogError(error);
 }
 
+public Action:SM_Playtime(client, args)
+{
+	if(!IsSpamming(client))
+	{
+		SetIsSpamming(client, 1.0);
+		
+		if(args == 0)
+		{
+			if(g_PlayerID[client] != 0)
+			{
+				DB_ShowPlaytime(client, g_PlayerID[client]);
+			}
+		}
+		else
+		{
+			decl String:sArg[MAX_NAME_LENGTH];
+			GetCmdArgString(sArg, sizeof(sArg));
+			
+			new target = FindTarget(client, sArg, true, false);
+			if(target != -1)
+			{
+				if(g_PlayerID[target] != 0)
+				{
+					DB_ShowPlaytime(client, g_PlayerID[target]);
+				}
+			}
+		}
+	}
+	
+	return Plugin_Handled;
+}
+
+DB_ShowPlaytime(client, PlayerID)
+{
+	new Handle:pack = CreateDataPack();
+	WritePackCell(pack, GetClientUserId(client));
+	WritePackCell(pack, PlayerID);
+	
+	decl String:query[512];
+	Format(query, sizeof(query), "SELECT (SELECT Playtime FROM players WHERE PlayerID=%d) AS TargetPlaytime, User, Playtime, PlayerID FROM players ORDER BY Playtime DESC LIMIT 0, 100",
+		PlayerID);
+	SQL_TQuery(g_DB, DB_ShowPlaytime_Callback, query, pack);
+}
+
+public DB_ShowPlaytime_Callback(Handle:owner, Handle:hndl, String:error[], any:data)
+{
+	if(hndl != INVALID_HANDLE)
+	{
+		ResetPack(data);
+		new client = GetClientOfUserId(ReadPackCell(data));
+		
+		if(client != 0)
+		{			
+			new rows = SQL_GetRowCount(hndl);
+			if(rows != 0)
+			{
+				new TargetPlayerID = ReadPackCell(data);
+				
+				new Handle:menu = CreateMenu(Menu_ShowPlaytime);
+				
+				decl String:sName[MAX_NAME_LENGTH], String:sTime[32], String:sDisplay[64], String:sInfo[16], PlayTime, PlayerID, TargetPlaytime;
+				for(new i = 1; i <= rows; i++)
+				{
+					SQL_FetchRow(hndl);
+					
+					TargetPlaytime = SQL_FetchInt(hndl, 0);
+					SQL_FetchString(hndl, 1, sName, sizeof(sName));
+					PlayTime = SQL_FetchInt(hndl, 2);
+					PlayerID = SQL_FetchInt(hndl, 3);
+					
+					// Set info
+					IntToString(PlayerID, sInfo, sizeof(sInfo));
+					
+					// Set display
+					FormatPlayerTime(float(PlayTime), sTime, sizeof(sTime), false, 1);
+					SplitString(sTime, ".", sTime, sizeof(sTime));
+					FormatEx(sDisplay, sizeof(sDisplay), "#%d: %s: %s", i, sName, sTime);
+					if((i % 7) == 0 || i == rows)
+					{
+						Format(sDisplay, sizeof(sDisplay), "%s\n--------------------------------------", sDisplay);
+					}
+					
+					// Add item
+					AddMenuItem(menu, sInfo, sDisplay);
+				}
+				
+				GetNameFromPlayerID(TargetPlayerID, sName, sizeof(sName));
+				
+				new Float:ConnectionTime, target;
+				
+				if((target = GetClientFromPlayerID(TargetPlayerID)) != 0)
+				{
+					ConnectionTime = GetClientTime(target);
+				}
+				
+				FormatPlayerTime(ConnectionTime + float(TargetPlaytime), sTime, sizeof(sTime), false, 1);
+				SplitString(sTime, ".", sTime, sizeof(sTime));
+				
+				SetMenuTitle(menu, "Playtimes\n \n%s: %s\n--------------------------------------",
+					sName,
+					sTime);
+				
+				SetMenuExitButton(menu, true);
+				DisplayMenu(menu, client, MENU_TIME_FOREVER);
+			}
+		}
+	}
+	else
+	{
+		LogError(error);
+	}
+	CloseHandle(data);
+}
+
+public Menu_ShowPlaytime(Handle:menu, MenuAction:action, param1, param2)
+{
+	if(action == MenuAction_End)
+		CloseHandle(menu);
+}
+
 public Action:SM_THelp(client, args)
 {	
 	new iSize = GetArraySize(g_hCommandList);
@@ -624,7 +918,7 @@ public Action:SM_THelp(client, args)
 		if(GetCmdReplySource() == SM_REPLY_TO_CHAT)
 			ReplyToCommand(client, "[SM] Look in your console for timer command list.");
 		
-		decl String:sCommand[256];
+		decl String:sCommand[32];
 		GetCmdArg(0, sCommand, sizeof(sCommand));
 		
 		if(args == 0)
@@ -644,10 +938,10 @@ public Action:SM_THelp(client, args)
 			
 			if(iStart < (iSize-10))
 			{
-				ReplyToCommand(client, "[SM] %s %d for the next page.", sCommand, iStart+10);
+				ReplyToCommand(client, "[SM] %s %d for the next page.", sCommand, iStart + 10);
 			}
 			
-			for(new i=iStart; i < (iStart+10) && (i < iSize); i++)
+			for(new i = iStart; i < (iStart + 10) && (i < iSize); i++)
 			{
 				GetArrayString(g_hCommandList, i, sResult, sizeof(sResult));
 				PrintToConsole(client, sResult);
@@ -656,7 +950,7 @@ public Action:SM_THelp(client, args)
 	}
 	else if(client == 0)
 	{
-		for(new i=0; i<iSize; i++)
+		for(new i; i < iSize; i++)
 		{
 			GetArrayString(g_hCommandList, i, sResult, sizeof(sResult));
 			PrintToServer(sResult);
@@ -693,6 +987,19 @@ public Action:SM_Search(client, args)
 	return Plugin_Handled;
 }
 
+GetClientFromPlayerID(PlayerID)
+{
+	for(new client = 1; client <= MaxClients; client++)
+	{
+		if(IsClientInGame(client) && !IsFakeClient(client) && g_PlayerID[client] == PlayerID)
+		{
+			return client;
+		}
+	}
+	
+	return 0;
+}
+
 public Native_IsSpamming(Handle:plugin, numParams)
 {
 	return GetEngineTime() < g_fSpamTime[GetNativeCell(1)];
@@ -707,7 +1014,7 @@ public Native_RegisterCommand(Handle:plugin, numParams)
 {
 	if(g_bCommandListLoaded == false)
 	{
-		g_hCommandList = CreateArray(ByteCountToCells(255));
+		g_hCommandList = CreateArray(ByteCountToCells(256));
 		g_bCommandListLoaded = true;
 	}
 	
@@ -719,7 +1026,7 @@ public Native_RegisterCommand(Handle:plugin, numParams)
 	FormatEx(sListing, sizeof(sListing), "%s - %s", sCommand, sDesc);
 	
 	decl String:sIndex[256];
-	new idx, idxlen, listlen = strlen(sListing), iSize = GetArraySize(g_hCommandList), bool:bIdxFound;
+	new idx, idxlen, listlen = strlen(sListing), iSize = GetArraySize(g_hCommandList), bool:IdxFound;
 	for(; idx < iSize; idx++)
 	{
 		GetArrayString(g_hCommandList, idx, sIndex, sizeof(sIndex));
@@ -729,7 +1036,7 @@ public Native_RegisterCommand(Handle:plugin, numParams)
 		{
 			if(sListing[cmpidx] < sIndex[cmpidx])
 			{
-				bIdxFound = true;
+				IdxFound = true;
 				break;
 			}
 			else if(sListing[cmpidx] > sIndex[cmpidx])
@@ -738,7 +1045,7 @@ public Native_RegisterCommand(Handle:plugin, numParams)
 			}
 		}
 		
-		if(bIdxFound == true)
+		if(IdxFound == true)
 			break;
 	}
 	
@@ -748,4 +1055,57 @@ public Native_RegisterCommand(Handle:plugin, numParams)
 		ShiftArrayUp(g_hCommandList, idx);
 	
 	SetArrayString(g_hCommandList, idx, sListing);
+}
+
+public Native_GetMapNameFromMapId(Handle:plugin, numParams)
+{
+	new Index = FindValueInArray(g_hDbMapIdList, GetNativeCell(1));
+	
+	if(Index != -1)
+	{
+		decl String:sMapName[64];
+		GetArrayString(g_hDbMapNameList, Index, sMapName, sizeof(sMapName));
+		SetNativeString(2, sMapName, GetNativeCell(3));
+		
+		return true;
+	}
+	else
+	{
+		return false;
+	}
+}
+
+public Native_GetNameFromPlayerID(Handle:plugin, numParams)
+{
+	decl String:sName[MAX_NAME_LENGTH];
+	
+	GetArrayString(g_hUser, GetNativeCell(1), sName, sizeof(sName));
+	
+	SetNativeString(2, sName, GetNativeCell(3));
+}
+
+public Native_GetSteamIDFromPlayerID(Handle:plugin, numParams)
+{
+	decl String:sAuth[32];
+	
+	GetArrayString(g_hPlayerID, GetNativeCell(1), sAuth, sizeof(sAuth));
+	
+	SetNativeString(2, sAuth, GetNativeCell(3));
+}
+
+public Native_GetMapIdFromMapName(Handle:plugin, numParams)
+{
+	decl String:sMapName[64];
+	GetNativeString(1, sMapName, sizeof(sMapName));
+	
+	new Index = FindStringInArray(g_hDbMapNameList, sMapName);
+	
+	if(Index != -1)
+	{
+		return GetArrayCell(g_hDbMapIdList, Index);
+	}
+	else
+	{
+		return 0;
+	}
 }

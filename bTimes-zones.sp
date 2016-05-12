@@ -1,160 +1,259 @@
 #pragma semicolon 1
 
-#include <btimes-core>
+#include <bTimes-core>
 
 public Plugin:myinfo = 
 {
-	name = "[bTimes] zones",
+	name = "[bTimes] Zones",
 	author = "blacky",
-	description = "Used to create zones for the bTimes mod",
+	description = "Used to create map zones",
 	version = VERSION,
 	url = "http://steamcommunity.com/id/blaackyy/"
 }
 
 #include <sourcemod>
-#include <bTimes-zones>
+#include <cstrike>
+#include <sdktools>
+#include <sdkhooks>
+#include <smlib/entities>
 #include <bTimes-timer>
 #include <bTimes-random>
-#include <sdktools>
-#include <cstrike>
+#include <bTimes-zones>
 
-#define MAX_ANTI_CHEATS 64
-#define MAX_FREE_STYLE 64
+enum
+{
+	GameType_CSS,
+	GameType_CSGO
+};
 
-new 	String:g_sMapName[64],
-	//g_mapteam,
-	Float:g_spawnpos[3];
- 
-new 	Float:g_main[2][8][3],	
-	bool:g_main_ready[2],
-	bool:g_main_info[MAXPLAYERS+1][2];
-new	const String:g_main_names[2][] = {"Main zone start", "Main zone end"};
-new 	g_main_HaloSprite, 
-	g_main_BeamSprite,
-	g_main_color[2][4] = {{0, 255, 0, 255}, {255, 0, 0, 255}};
+new g_GameType;
 
-new 	Float:g_bonus[2][8][3],
-	bool:g_bonus_ready[2],
-	bool:g_bonus_info[MAXPLAYERS+1][2];
-new	const String:g_bonus_names[2][] = {"Bonus zone start", "Bonus zone end"};
-new	g_bonus_HaloSprite, 
-	g_bonus_BeamSprite,
-	g_bonus_color[2][4] = {{0, 255, 0, 255}, {255, 0, 0, 255}};
+new	Handle:g_DB,
+	Handle:g_MapList,
+	String:g_sMapName[64],
+	Float:g_fSpawnPos[3],
+	g_TotalZoneAllMaps[ZONE_COUNT];
+
+// Zone properties
+enum Properties
+{
+	Max,
+	Count,
+	Entity[64],
+	bool:Ready[64],
+	RowID[64],
+	Flags[64],
+	bool:Replaceable,
+	bool:TriggerBased,
+	String:Name[64],
+	Color[4],
+	HaloIndex,
+	ModelIndex,
+	Offset
+};
+
+new	g_Properties[ZONE_COUNT][Properties]; // Properties for each type of zone
+
+// Zone setup
+enum Setup
+{
+	bool:InZonesMenu,
+	bool:InSetFlagsMenu,
+	CurrentZone,
+	Handle:SetupTimer,
+	bool:Snapping,
+	GridSnap,
+	bool:ViewAnticheats
+};
+
+new	g_Setup[MAXPLAYERS + 1][Setup];
+
+new	g_Entities_ZoneType[2048] = {-1, ...}, // For faster lookup of zone type by entity number
+	g_Entities_ZoneNumber[2048] = {-1, ...}; // For faster lookup of zone number by entity number
+new	Float:g_Zones[ZONE_COUNT][64][8][3], // Zones that have been created
+	g_TotalZoneCount;
 	
-new Float:g_anticheat[MAX_ANTI_CHEATS][8][3],
-	g_anticheat_HaloSprite,
-	g_anticheat_BeamSprite,
-	g_anticheat_color[4] = {255, 255, 0, 255},
-	g_anticheat_count,
-	g_anticheat_setup[MAXPLAYERS+1] = {-1, ...},
-	bool:g_anticheat_view[MAXPLAYERS+1];
+new	bool:g_bInside[MAXPLAYERS + 1][ZONE_COUNT][64];
+
+new	g_SnapModelIndex,
+	g_SnapHaloIndex;
 	
-new Float:g_freestyle[MAX_FREE_STYLE][8][3],
-	g_freestyle_HaloSprite,
-	g_freestyle_BeamSprite,
-	g_freestyle_color[4] = {0, 0, 255, 255},
-	g_freestyle_count,
-	g_freestyle_setup[MAXPLAYERS+1] = {-1, ...};
+// Zone drawing
+new	g_Drawing_Zone,
+	g_Drawing_ZoneNumber;
 
-new 	g_setup[MAXPLAYERS+1] = {-1, ...};
-
-new	g_modulate_ac = 0,
-	g_modulate_f  = 0,
-	bool:g_update = false;
-
-new Handle:g_DB = INVALID_HANDLE;
-
-// Settings
-new Float:g_prespeed = 290.0;
-
-new	String:g_msg_start[128],
-	String:g_msg_varcol[128],
-	String:g_msg_textcol[128];
-	
-// Cvar handles
-new 	Handle:g_hMaxPrespeed,
-	Handle:g_hMainStartColor,
-	Handle:g_hMainEndColor,
-	Handle:g_hBonusStartColor,
-	Handle:g_hBonusEndColor,
-	Handle:g_hAntiCheatColor,
-	Handle:g_hFreeStyleColor;
+// Cvars
+new	Handle:g_hZoneColor[ZONE_COUNT],
+	Handle:g_hZoneOffset[ZONE_COUNT],
+	Handle:g_hZoneTexture[ZONE_COUNT],
+	Handle:g_hZoneTrigger[ZONE_COUNT];
 	
 // Forwards
 new	Handle:g_fwdOnZonesLoaded;
+	
+// Chat
+new	String:g_msg_start[128],
+	String:g_msg_varcol[128],
+	String:g_msg_textcol[128];
 
 public OnPluginStart()
-{
-	// Connect to the database
+{	
+	decl String:sGame[64];
+	GetGameFolderName(sGame, sizeof(sGame));
+	
+	if(StrEqual(sGame, "cstrike"))
+		g_GameType = GameType_CSS;
+	else if(StrEqual(sGame, "csgo"))
+		g_GameType = GameType_CSGO;
+	else
+		SetFailState("This timer does not support this game (%s)", sGame);
+	
+	// Connect to database
 	DB_Connect();
+	
+	// Cvars
+	g_hZoneColor[MAIN_START]  = CreateConVar("timer_mainstart_color", "0 255 0 255", "Set the main start zone's RGBA color");
+	g_hZoneColor[MAIN_END]    = CreateConVar("timer_mainend_color", "255 0 0 255", "Set the main end zone's RGBA color");
+	g_hZoneColor[BONUS_START] = CreateConVar("timer_bonusstart_color", "0 255 0 255", "Set the bonus start zone's RGBA color");
+	g_hZoneColor[BONUS_END]   = CreateConVar("timer_bonusend_color", "255 0 0 255", "Set the bonus end zone's RGBA color");
+	g_hZoneColor[ANTICHEAT]   = CreateConVar("timer_ac_color", "255 255 0 255", "Set the anti-cheat zone's RGBA color");
+	g_hZoneColor[FREESTYLE]   = CreateConVar("timer_fs_color", "0 0 255 255", "Set the freestyle zone's RGBA color");
+	
+	g_hZoneOffset[MAIN_START]  = CreateConVar("timer_mainstart_offset", "128", "Set the the default height for the main start zone.");
+	g_hZoneOffset[MAIN_END]    = CreateConVar("timer_mainend_offset", "128", "Set the the default height for the main end zone.");
+	g_hZoneOffset[BONUS_START] = CreateConVar("timer_bonusstart_offset", "128", "Set the the default height for the bonus start zone.");
+	g_hZoneOffset[BONUS_END]   = CreateConVar("timer_bonusend_offset", "128", "Set the the default height for the bonus end zone.");
+	g_hZoneOffset[ANTICHEAT]   = CreateConVar("timer_ac_offset", "0", "Set the the default height for the anti-cheat zone.");
+	g_hZoneOffset[FREESTYLE]   = CreateConVar("timer_fs_offset", "0", "Set the the default height for the freestyle zone.");
+	
+	g_hZoneTexture[MAIN_START]  = CreateConVar("timer_mainstart_tex", "materials/sprites/trails/bluelightning", "Texture for main start zone. (Exclude the file types like .vmt/.vtf)");
+	g_hZoneTexture[MAIN_END]    = CreateConVar("timer_mainend_tex", "materials/sprites/trails/bluelightning", "Texture for main end zone.");
+	g_hZoneTexture[BONUS_START] = CreateConVar("timer_bonusstart_tex", "materials/sprites/trails/bluelightning", "Texture for bonus start zone.");
+	g_hZoneTexture[BONUS_END]   = CreateConVar("timer_bonusend_tex", "materials/sprites/trails/bluelightning", "Texture for main end zone.");
+	g_hZoneTexture[ANTICHEAT]   = CreateConVar("timer_ac_tex", "materials/sprites/trails/bluelightning", "Texture for anti-cheat zone.");
+	g_hZoneTexture[FREESTYLE]   = CreateConVar("timer_fs_tex", "materials/sprites/trails/bluelightning", "Texture for freestyle zone.");
+	
+	g_hZoneTrigger[MAIN_START]  = CreateConVar("timer_mainstart_trigger", "0", "Main start zone trigger based (1) or uses old player detection method (0)", 0, true, 0.0, true, 1.0);
+	g_hZoneTrigger[MAIN_END]    = CreateConVar("timer_mainend_trigger", "0", "Main end zone trigger based (1) or uses old player detection method (0)", 0, true, 0.0, true, 1.0);
+	g_hZoneTrigger[BONUS_START] = CreateConVar("timer_bonusstart_trigger", "0", "Bonus start zone trigger based (1) or uses old player detection method (0)", 0, true, 0.0, true, 1.0);
+	g_hZoneTrigger[BONUS_END]   = CreateConVar("timer_bonusend_trigger", "0", "Bonus end zone trigger based (1) or uses old player detection method (0)", 0, true, 0.0, true, 1.0);
+	g_hZoneTrigger[ANTICHEAT]   = CreateConVar("timer_ac_trigger", "1", "Anti-cheat zone trigger based (1) or uses old player detection method (0)", 0, true, 0.0, true, 1.0);
+	g_hZoneTrigger[FREESTYLE]   = CreateConVar("timer_fs_trigger", "1", "Freestyle zone trigger based (1) or uses old player detection method (0)", 0, true, 0.0, true, 1.0);
+	
+	AutoExecConfig(true, "zones", "timer");
+	
+	// Hook changes
+	for(new Zone = 0; Zone < ZONE_COUNT; Zone++)
+	{
+		HookConVarChange(g_hZoneColor[Zone], OnZoneColorChanged);
+		HookConVarChange(g_hZoneOffset[Zone], OnZoneOffsetChanged);	
+		HookConVarChange(g_hZoneTrigger[Zone], OnZoneTriggerChanged);
+	}
+	
+	// Admin Commands
+	RegAdminCmd("sm_zones", SM_Zones, ADMFLAG_CHEATS, "Opens the zones menu.");
+	
+	// Player Commands
+	RegConsoleCmdEx("sm_b", SM_B, "Teleports you to the bonus area");
+	RegConsoleCmdEx("sm_bonus", SM_B, "Teleports you to the bonus area");
+	RegConsoleCmdEx("sm_br", SM_B, "Teleports you to the bonus area");
+	RegConsoleCmdEx("sm_r", SM_R, "Teleports you to the starting zone");
+	RegConsoleCmdEx("sm_restart", SM_R, "Teleports you to the starting zone");
+	RegConsoleCmdEx("sm_respawn", SM_R, "Teleports you to the starting zone");
+	RegConsoleCmdEx("sm_start", SM_R, "Teleports you to the starting zone");
+	RegConsoleCmdEx("sm_end", SM_End, "Teleports your to the end zone");
+	RegConsoleCmdEx("sm_endb", SM_EndB, "Teleports you to the bonus end zone");
+	
+	// Command listeners for easier team joining
+	if(g_GameType == GameType_CSS)
+	{
+		AddCommandListener(Command_JoinTeam, "jointeam");
+		AddCommandListener(Command_JoinTeam, "spectate");
+	}
 	
 	// Events
 	HookEvent("player_spawn", Event_PlayerSpawn, EventHookMode_Post);
-	
-	// Timer cvars
-	g_hMaxPrespeed     = CreateConVar("timer_maxprespeed", "290.0", "Max prespeed in starting zones.", 0, true, 0.0, false);
-	g_hMainStartColor  = CreateConVar("timer_mainstartcolor", "0 255 0 255", "Red/Green/Blue/Alpha of main start zone.");
-	g_hMainEndColor    = CreateConVar("timer_mainendcolor", "255 0 0 255", "Red/Green/Blue/Alpha of main end zone.");
-	g_hBonusStartColor = CreateConVar("timer_bonusstartcolor", "0 255 0 255", "Red/Green/Blue/Alpha of bonus start zone.");
-	g_hBonusEndColor   = CreateConVar("timer_bonusendcolor", "255 0 0 255", "Red/Green/Blue/Alpha of bonus end zone.");
-	g_hAntiCheatColor  = CreateConVar("timer_anticheatcolor", "255 255 0 255", "Red/Green/Blue/Alpha of anti-cheat zones.");
-	g_hFreeStyleColor  = CreateConVar("timer_freestylecolor", "0 0 255 255", "Red/Green/Blue/Alpha of free style zones.");
-	
-	// Hook timer cvars
-	HookConVarChange(g_hMaxPrespeed, OnMaxPrespeedChanged);
-	HookConVarChange(g_hMainStartColor, OnMainStartChanged);
-	HookConVarChange(g_hMainEndColor, OnMainEndChanged);
-	HookConVarChange(g_hBonusStartColor, OnBonusStartChanged);
-	HookConVarChange(g_hBonusEndColor, OnBonusEndChanged);
-	HookConVarChange(g_hAntiCheatColor, OnAntiCheatChanged);
-	HookConVarChange(g_hFreeStyleColor, OnFreeStyleChanged);
-	
-	// Create zones cfg
-	AutoExecConfig(true, "zones", "timer");
-	
-	// Admin menu for zones
-	RegAdminCmd("sm_zones", Cmd_OpenZoneMenu, ADMFLAG_CHEATS, "Open zone control menu");
-
-	// Player Commands
-	RegConsoleCmdEx("sm_b", TeleportToBonus, "Teleports you to the bonus area");
-	RegConsoleCmdEx("sm_bonus", TeleportToBonus, "Teleports you to the bonus area");
-	RegConsoleCmdEx("sm_br", TeleportToBonus, "Teleports you to the bonus area");
-	RegConsoleCmdEx("sm_r", TeleportToMain, "Teleports you to the starting zone");
-	RegConsoleCmdEx("sm_restart", TeleportToMain, "Teleports you to the starting zone");
-	RegConsoleCmdEx("sm_respawn", TeleportToMain, "Teleports you to the starting zone");
-	RegConsoleCmdEx("sm_start", TeleportToMain, "Teleports you to the starting zone");
-	RegConsoleCmdEx("sm_end", TeleportToMainEnd, "Teleports your to the end zone");
-	RegConsoleCmdEx("sm_endb", TeleportToBonusEnd, "Teleports you to the bonus end zone");
-	
-	// Command listeners for easier team joining
-	AddCommandListener(Command_JoinTeam, "jointeam");
-	AddCommandListener(Command_JoinTeam, "spectate");
 }
- 
+
 public APLRes:AskPluginLoad2(Handle:myself, bool:late, String:error[], err_max)
 {
 	// Natives
-	CreateNative("OpenZoneMenu", Native_OpenZoneMenu);
-	CreateNative("IsInAStartZone", Native_IsInAStartZone);
-	CreateNative("IsInAFreeStyleZone", Native_IsInAFreeStyleZone);
-	CreateNative("GoToStart", Native_GoToStart);
-	CreateNative("ZoneExists", Native_ZoneExists);
+	CreateNative("Timer_InsideZone", Native_InsideZone);
+	CreateNative("Timer_IsPointInsideZone", Native_IsPointInsideZone);
+	CreateNative("Timer_TeleportToZone", Native_TeleportToZone);
+	CreateNative("GetTotalZonesAllMaps", Native_GetTotalZonesAllMaps);
 	
 	// Forwards
 	g_fwdOnZonesLoaded = CreateGlobalForward("OnZonesLoaded", ET_Event);
-	
-	return APLRes_Success;
 }
- 
+
+/*
+* Teleports a client to a zone, commented cause I think it causes my IDE to crash if I don't
+*/
+TeleportToZone(client, Zone, ZoneNumber, bool:bottom = false)
+{
+	StopTimer(client);
+	
+	if(g_Properties[Zone][Ready][ZoneNumber] == true)
+	{
+		new Float:vPos[3];
+		GetZonePosition(Zone, ZoneNumber, vPos);
+		
+		if(bottom)
+		{
+			new Float:fBottom = (g_Zones[Zone][ZoneNumber][0][2] < g_Zones[Zone][ZoneNumber][7][2])?g_Zones[Zone][ZoneNumber][0][2]:g_Zones[Zone][ZoneNumber][7][2];
+			
+			TR_TraceRayFilter(vPos, Float:{90.0, 0.0, 0.0}, MASK_PLAYERSOLID_BRUSHONLY, RayType_Infinite, TraceRayDontHitSelf, client);
+			
+			if(TR_DidHit())
+			{
+				new Float:vHitPos[3];
+				TR_GetEndPosition(vHitPos);
+				
+				if(vHitPos[2] < fBottom)
+					vPos[2] = fBottom;
+				else
+					vPos[2] = vHitPos[2] + 0.5;
+			}
+			else
+			{
+				vPos[2] = fBottom;
+			}
+		}
+		
+		
+		TeleportEntity(client, vPos, NULL_VECTOR, Float:{0.0, 0.0, 0.0});
+	}
+	else
+	{
+		TeleportEntity(client, g_fSpawnPos, NULL_VECTOR, Float:{0.0, 0.0, 0.0});
+	}
+}
+
 public OnMapStart()
 {
-	// Re-init all zones
-	g_anticheat_count = 0;
-	g_freestyle_count = 0;
-	g_main_ready[0]   = false;
-	g_main_ready[1]   = false;
-	g_bonus_ready[0]  = false;
-	g_bonus_ready[1]  = false;
+	if(g_MapList != INVALID_HANDLE)
+		CloseHandle(g_MapList);
+	
+	g_MapList = ReadMapList();
+	
+	GetCurrentMap(g_sMapName, sizeof(g_sMapName));
+	
+	if(g_GameType == GameType_CSS)
+	{
+		g_SnapHaloIndex = PrecacheModel("materials/sprites/halo01.vmt");
+		g_SnapModelIndex = PrecacheModel("materials/sprites/trails/bluelightning.vmt");
+	}
+	else if(g_GameType == GameType_CSGO)
+	{
+		g_SnapHaloIndex = PrecacheModel("materials/sprites/light_glow02.vmt");
+		g_SnapModelIndex = PrecacheModel("materials/sprites/laserbeam.vmt");
+	}
+	
+	PrecacheModel("models/props/cs_office/vending_machine.mdl");
+	
+	CreateTimer(0.1, Timer_SnapPoint, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
+	CreateTimer(0.1, Timer_DrawBeams, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
 	
 	// Check for t/ct spawns
 	new t  = FindEntityByClassname(-1, "info_player_terrorist");
@@ -162,36 +261,9 @@ public OnMapStart()
 	
 	// Set map team and get spawn position
 	if(t != -1)
-	{
-		//g_mapteam = 2;
-		GetEntPropVector(t, Prop_Send, "m_vecOrigin", g_spawnpos);
-	}
+		Entity_GetAbsOrigin(t, g_fSpawnPos);
 	else
-	{
-		//g_mapteam = 3;
-		GetEntPropVector(ct, Prop_Send, "m_vecOrigin", g_spawnpos);
-	}
-	
-	// For sql related stuff, get map name
-	GetCurrentMap(g_sMapName, sizeof(g_sMapName));
-
-	// Needed textures for zones
-	g_main_BeamSprite  		= PrecacheModel("materials/sprites/trails/bluelightning.vmt");
-	g_main_HaloSprite  		= PrecacheModel("materials/sprites/halo01.vmt");
-	g_bonus_BeamSprite 		= PrecacheModel("materials/sprites/trails/bluelightning.vmt");
-	g_bonus_HaloSprite 		= PrecacheModel("materials/sprites/halo01.vmt");
-	g_anticheat_BeamSprite 	= PrecacheModel("materials/sprites/trails/bluelightning.vmt");
-	g_anticheat_HaloSprite 	= PrecacheModel("materials/sprites/halo01.vmt");
-	g_freestyle_BeamSprite 	= PrecacheModel("materials/sprites/trails/bluelightning.vmt");
-	g_freestyle_HaloSprite		= PrecacheModel("materials/sprites/halo01.vmt");
-	
-	// Add needed textures to downloads table
-	AddFileToDownloadsTable("materials/sprites/trails/bluelightning.vmt");
-	AddFileToDownloadsTable("materials/sprites/trails/bluelightning.vtf");
-	AddFileToDownloadsTable("materials/sprites/halo01.vmt");
-	
-	// For showing the zones
-	CreateTimer(0.1, LoopBeams, _, TIMER_FLAG_NO_MAPCHANGE | TIMER_REPEAT);
+		Entity_GetAbsOrigin(ct, g_fSpawnPos);
 }
 
 public OnMapIDPostCheck()
@@ -199,158 +271,27 @@ public OnMapIDPostCheck()
 	DB_LoadZones();
 }
 
-public OnClientPutInServer(client)
+public bool:OnClientConnect(client, String:rejectmsg[], maxlen)
 {
-	// So players don't join with a zone following them
-	TrackZoneSetup(g_setup[client], -1);
-	TrackZoneSetup(g_anticheat_setup[client], -1);
-	TrackZoneSetup(g_freestyle_setup[client], -1);
+	InitializePlayerProperties(client);
 	
-	// So players don't join seeing anti-cheat zones
-	g_anticheat_view[client] = false;
+	return true;
 }
 
 public OnConfigsExecuted()
 {
-	// Set max prespeed
-	g_prespeed = GetConVarFloat(g_hMaxPrespeed);
+	for(new client = 1; client <= MaxClients; client++)
+		InitializePlayerProperties(client);
 	
-	// Color strings
-	decl String:sColor[32], String:sColorExp[4][8];
-	
-	// Get zone colors
-	GetConVarString(g_hMainStartColor, sColor, sizeof(sColor));
-	ExplodeString(sColor, " ", sColorExp, 4, 8);
-	for(new i=0; i<4; i++)
-	{
-		g_main_color[0][i] = StringToInt(sColorExp[i]);
-	}
-	
-	GetConVarString(g_hMainEndColor, sColor, sizeof(sColor));
-	ExplodeString(sColor, " ", sColorExp, 4, 8);
-	for(new i=0; i<4; i++)
-	{
-		g_main_color[1][i] = StringToInt(sColorExp[i]);
-	}
-	
-	GetConVarString(g_hBonusStartColor, sColor, sizeof(sColor));
-	ExplodeString(sColor, " ", sColorExp, 4, 8);
-	for(new i=0; i<4; i++)
-	{
-		g_bonus_color[0][i] = StringToInt(sColorExp[i]);
-	}
-	
-	GetConVarString(g_hBonusStartColor, sColor, sizeof(sColor));
-	ExplodeString(sColor, " ", sColorExp, 4, 8);
-	for(new i=0; i<4; i++)
-	{
-		g_bonus_color[0][i] = StringToInt(sColorExp[i]);
-	}
-	
-	GetConVarString(g_hBonusEndColor, sColor, sizeof(sColor));
-	ExplodeString(sColor, " ", sColorExp, 4, 8);
-	for(new i=0; i<4; i++)
-	{
-		g_bonus_color[1][i] = StringToInt(sColorExp[i]);
-	}
-	
-	GetConVarString(g_hAntiCheatColor, sColor, sizeof(sColor));
-	ExplodeString(sColor, " ", sColorExp, 4, 8);
-	for(new i=0; i<4; i++)
-	{
-		g_anticheat_color[i] = StringToInt(sColorExp[i]);
-	}
-	
-	GetConVarString(g_hFreeStyleColor, sColor, sizeof(sColor));
-	ExplodeString(sColor, " ", sColorExp, 4, 8);
-	for(new i=0; i<4; i++)
-	{
-		g_freestyle_color[i] = StringToInt(sColorExp[i]);
-	}
+	InitializeZoneProperties();
+	ResetEntities();
 }
 
-public OnMaxPrespeedChanged(Handle:convar, const String:oldValue[], const String:newValue[])
+public OnClientDisconnect(client)
 {
-	// Set the allowed prespeed in bonus/main zones
-	g_prespeed = StringToFloat(newValue);
-}
-
-public OnMainStartChanged(Handle:convar, const String:oldValue[], const String:newValue[])
-{
-	// Color string
-	decl String:sColorExp[4][8];
-	
-	// Set main zone start color
-	ExplodeString(newValue, " ", sColorExp, 4, 8);
-	for(new i=0; i<4; i++)
-	{
-		g_main_color[0][i] = StringToInt(sColorExp[i]);
-	}
-}
-
-public OnMainEndChanged(Handle:convar, const String:oldValue[], const String:newValue[])
-{
-	// Color string
-	decl String:sColorExp[4][8];
-	
-	// Set main zone end color
-	ExplodeString(newValue, " ", sColorExp, 4, 8);
-	for(new i=0; i<4; i++)
-	{
-		g_main_color[1][i] = StringToInt(sColorExp[i]);
-	}
-}
-
-public OnBonusStartChanged(Handle:convar, const String:oldValue[], const String:newValue[])
-{
-	// Color string
-	decl String:sColorExp[4][8];
-	
-	// Set bonus zone start color
-	ExplodeString(newValue, " ", sColorExp, 4, 8);
-	for(new i=0; i<4; i++)
-	{
-		g_bonus_color[0][i] = StringToInt(sColorExp[i]);
-	}
-}
-
-public OnBonusEndChanged(Handle:convar, const String:oldValue[], const String:newValue[])
-{
-	// Color string
-	decl String:sColorExp[4][8];
-	
-	// Set bonus zone end color
-	ExplodeString(newValue, " ", sColorExp, 4, 8);
-	for(new i=0; i<4; i++)
-	{
-		g_bonus_color[1][i] = StringToInt(sColorExp[i]);
-	}
-}
-
-public OnAntiCheatChanged(Handle:convar, const String:oldValue[], const String:newValue[])
-{
-	// Color string
-	decl String:sColorExp[4][8];
-	
-	// Set anti-cheat zone color
-	ExplodeString(newValue, " ", sColorExp, 4, 8);
-	for(new i=0; i<4; i++)
-	{
-		g_anticheat_color[i] = StringToInt(sColorExp[i]);
-	}
-}
-
-public OnFreeStyleChanged(Handle:convar, const String:oldValue[], const String:newValue[])
-{
-	// Color string
-	decl String:sColorExp[4][8];
-	
-	// Set free style zone color
-	ExplodeString(newValue, " ", sColorExp, 4, 8);
-	for(new i=0; i<4; i++)
-	{
-		g_freestyle_color[i] = StringToInt(sColorExp[i]);
-	}
+	g_Setup[client][CurrentZone]    = -1;
+	g_Setup[client][InZonesMenu]    = false;
+	g_Setup[client][InSetFlagsMenu] = false;
 }
 
 public OnTimerChatChanged(MessageType, String:Message[])
@@ -358,37 +299,229 @@ public OnTimerChatChanged(MessageType, String:Message[])
 	if(MessageType == 0)
 	{
 		Format(g_msg_start, sizeof(g_msg_start), Message);
-		ReplaceString(g_msg_start, sizeof(g_msg_start), "^", "\x07", false);
+		ReplaceMessage(g_msg_start, sizeof(g_msg_start));
 	}
 	else if(MessageType == 1)
 	{
 		Format(g_msg_varcol, sizeof(g_msg_varcol), Message);
-		ReplaceString(g_msg_varcol, sizeof(g_msg_varcol), "^", "\x07", false);
+		ReplaceMessage(g_msg_varcol, sizeof(g_msg_varcol));
 	}
 	else if(MessageType == 2)
 	{
 		Format(g_msg_textcol, sizeof(g_msg_textcol), Message);
-		ReplaceString(g_msg_textcol, sizeof(g_msg_textcol), "^", "\x07", false);
+		ReplaceMessage(g_msg_textcol, sizeof(g_msg_textcol));
 	}
 }
 
+ReplaceMessage(String:message[], maxlength)
+{
+	if(g_GameType == GameType_CSS)
+	{
+		ReplaceString(message, maxlength, "^", "\x07", false);
+	}
+	else if(g_GameType == GameType_CSGO)
+	{
+		ReplaceString(message, maxlength, "^A", "\x0A");
+		ReplaceString(message, maxlength, "^1", "\x01");
+		ReplaceString(message, maxlength, "^2", "\x02");
+		ReplaceString(message, maxlength, "^3", "\x03");
+		ReplaceString(message, maxlength, "^4", "\x04");
+		ReplaceString(message, maxlength, "^5", "\x05");
+		ReplaceString(message, maxlength, "^6", "\x06");
+		ReplaceString(message, maxlength, "^7", "\x07");
+	}
+}
+
+public OnZoneColorChanged(Handle:convar, const String:oldValue[], const String:newValue[])
+{
+	for(new Zone; Zone < ZONE_COUNT; Zone++)
+	{
+		if(g_hZoneColor[Zone] == convar)
+		{
+			UpdateZoneColor(Zone);
+			break;
+		}
+	}
+}
+
+public OnZoneOffsetChanged(Handle:convar, const String:oldValue[], const String:newValue[])
+{
+	for(new Zone; Zone < ZONE_COUNT; Zone++)
+	{
+		if(g_hZoneOffset[Zone] == convar)
+		{
+			g_Properties[Zone][Offset] = StringToInt(newValue);
+			break;
+		}
+	}
+}
+
+public OnZoneTriggerChanged(Handle:convar, const String:oldValue[], const String:newValue[])
+{
+	for(new Zone; Zone < ZONE_COUNT; Zone++)
+	{
+		if(g_hZoneTrigger[Zone] == convar)
+		{
+			g_Properties[Zone][TriggerBased] = bool:StringToInt(newValue);
+			break;
+		}
+	}
+}
+
+InitializeZoneProperties()
+{
+	g_TotalZoneCount     = 0;
+	g_Drawing_Zone       = 0;
+	g_Drawing_ZoneNumber = 0;
+	
+	for(new Zone; Zone < ZONE_COUNT; Zone++)
+	{
+		GetZoneName(Zone, g_Properties[Zone][Name], 64);
+		UpdateZoneColor(Zone);
+		UpdateZoneBeamTexture(Zone);
+		UpdateZoneSpriteTexture(Zone);
+		g_Properties[Zone][Offset]       = GetConVarInt(g_hZoneOffset[Zone]);
+		g_Properties[Zone][TriggerBased] = GetConVarBool(g_hZoneTrigger[Zone]);
+		g_Properties[Zone][Count]        = 0;
+		
+		switch(Zone)
+		{
+			case MAIN_START, MAIN_END, BONUS_START, BONUS_END:
+			{
+				g_Properties[Zone][Max]         = 1;
+				g_Properties[Zone][Replaceable] = true;
+			}
+			case ANTICHEAT, FREESTYLE:
+			{
+				g_Properties[Zone][Max]         = 64;
+				g_Properties[Zone][Replaceable] = false;
+			}
+		}
+		
+		for(new i; i < g_Properties[Zone][Max]; i++)
+		{
+			g_Properties[Zone][Ready][i]  = false;
+			g_Properties[Zone][RowID][i]  = 0;
+			g_Properties[Zone][Entity][i] = -1;
+			g_Properties[Zone][Flags][i]  = 0;
+		}
+	}
+}
+
+InitializePlayerProperties(client)
+{
+	g_Setup[client][CurrentZone]    = -1;
+	g_Setup[client][ViewAnticheats] = false;
+	g_Setup[client][Snapping]       = true;
+	g_Setup[client][GridSnap]       = 64;
+	g_Setup[client][InZonesMenu]    = false;
+	g_Setup[client][InSetFlagsMenu] = false;
+}
+
+GetZoneName(Zone, String:buffer[], maxlength)
+{
+	switch(Zone)
+	{
+		case MAIN_START:
+		{
+			FormatEx(buffer, maxlength, "Main Start");
+		}
+		case MAIN_END:
+		{
+			FormatEx(buffer, maxlength, "Main End");
+		}
+		case BONUS_START:
+		{
+			FormatEx(buffer, maxlength, "Bonus Start");
+		}
+		case BONUS_END:
+		{
+			FormatEx(buffer, maxlength, "Bonus End");
+		}
+		case ANTICHEAT:
+		{
+			FormatEx(buffer, maxlength, "Anti-cheat");
+		}
+		case FREESTYLE:
+		{
+			FormatEx(buffer, maxlength, "Freestyle");
+		}
+		default:
+		{
+			FormatEx(buffer, maxlength, "Unknown");
+		}
+	}
+}
+
+UpdateZoneColor(Zone)
+{
+	decl String:sColor[32], String:sColorExp[4][8];
+	
+	GetConVarString(g_hZoneColor[Zone], sColor, sizeof(sColor));
+	ExplodeString(sColor, " ", sColorExp, 4, 8);
+	
+	for(new i; i < 4; i++)
+		g_Properties[Zone][Color][i] = StringToInt(sColorExp[i]);
+}
+
+UpdateZoneBeamTexture(Zone)
+{
+	if(g_GameType == GameType_CSS)
+	{
+		decl String:sBuffer[PLATFORM_MAX_PATH];
+		GetConVarString(g_hZoneTexture[Zone], sBuffer, PLATFORM_MAX_PATH);
+		
+		decl String:sBeam[PLATFORM_MAX_PATH];
+		FormatEx(sBeam, PLATFORM_MAX_PATH, "%s.vmt", sBuffer);
+		g_Properties[Zone][ModelIndex] = PrecacheModel(sBeam);
+		AddFileToDownloadsTable(sBeam);
+		
+		FormatEx(sBeam, PLATFORM_MAX_PATH, "%s.vtf", sBuffer);
+		AddFileToDownloadsTable(sBeam);
+	}
+	else if(g_GameType == GameType_CSGO)
+	{
+		g_Properties[Zone][ModelIndex] = PrecacheModel("materials/sprites/laserbeam.vmt");
+	}
+}
+
+UpdateZoneSpriteTexture(Zone)
+{
+	decl String:sSprite[PLATFORM_MAX_PATH];
+	
+	if(g_GameType == GameType_CSS)
+	{
+		FormatEx(sSprite, sizeof(sSprite), "materials/sprites/halo01.vmt");
+	}
+	else if(g_GameType == GameType_CSGO)
+	{
+		FormatEx(sSprite, sizeof(sSprite), "materials/sprites/light_glow02.vmt");
+	}
+	
+	g_Properties[Zone][HaloIndex] = PrecacheModel(sSprite);
+}
+
+ResetEntities()
+{
+	for(new entity; entity < 2048; entity++)
+	{
+		g_Entities_ZoneType[entity]   = -1;
+		g_Entities_ZoneNumber[entity] = -1;
+	}
+}
+
+// Might remove this or place into a separate plugin
 public Action:Command_JoinTeam(client, const String:command[], argc)
 {
 	if(StrEqual(command, "jointeam"))
 	{
-		// String that holds the jointeam argument
 		decl String:sArg[192];
-		
-		// Get the argument
 		GetCmdArgString(sArg, sizeof(sArg));
 		
-		// Get team number from argument
 		new team = StringToInt(sArg);
 		
-		// if team is t/ct/auto assign
 		if(team == 2 || team == 3)
 		{
-			// spawn player to map team
 			CS_SwitchTeam(client, team);
 			CS_RespawnPlayer(client);
 		}
@@ -397,801 +530,694 @@ public Action:Command_JoinTeam(client, const String:command[], argc)
 			CS_SwitchTeam(client, GetRandomInt(2, 3));
 			CS_RespawnPlayer(client);
 		}
-		else if(team == 1) // if team is spectators
+		else if(team == 1)
 		{
-			// change player to spectator team
 			ForcePlayerSuicide(client);
 			ChangeClientTeam(client, 1);
 		}
 	}
-	else // if player used the spectate command
+	else
 	{
-		// change player to spectate
 		ForcePlayerSuicide(client);
 		ChangeClientTeam(client, 1);
 	}
+	
 	return Plugin_Handled;
 }
 
 public Action:Event_PlayerSpawn(Handle:event, const String:name[], bool:dontBroadcast)
 {	
-	// Get the player who spawned
 	new client = GetClientOfUserId(GetEventInt(event, "userid"));
 	
-	// If they're in game
 	if(IsClientInGame(client))
 	{
-		// if the main zone is ready
-		if(g_main_ready[0])
+		if(g_Properties[MAIN_START][Ready][0] == true)
 		{
-			// Send them to the main zone
-			TeleportToZone(client, g_main[0][0], g_main[0][7]);
+			TeleportToZone(client, MAIN_START, 0, true);
 		}
-		
-		// if main zone is not ready
 		else
 		{
-			// Send them to a map spawn point
-			TeleportEntity(client, g_spawnpos, NULL_VECTOR, NULL_VECTOR);
+			TeleportEntity(client, g_fSpawnPos, NULL_VECTOR, NULL_VECTOR);
 		}
 	}
 	
 	return Plugin_Continue;
 }
 
-public Action:Cmd_OpenZoneMenu(client, args)
+public Action:SM_R(client, args)
 {
-	OpenZoneMenu(client);
-	return Plugin_Handled;
-}
-
-public Native_IsInAStartZone(Handle:plugin, numParams)
-{
-	return IsInsideZone(GetNativeCell(1), g_main[0]) || IsInsideZone(GetNativeCell(1), g_bonus[0]);
-}
-
-public Native_IsInAFreeStyleZone(Handle:plugin, numParams)
-{
-	new client = GetNativeCell(1);
-	for(new i=0; i<g_freestyle_count; i++)
-	{
-		if(IsInsideZone(client, g_freestyle[i]))
-			return true;
-	}
-	return false;
-}
-
-public Native_GoToStart(Handle:plugin, numParams)
-{
-	TeleportToZone(GetNativeCell(1), g_main[0][0], g_main[0][7]);
-}
-
-public Native_OpenZoneMenu(Handle:plugin, numParams)
-{
-	new Handle:menu = CreateMenu(AdminMenu_ZoneCtrl);
-	
-	SetMenuTitle(menu, "Zones control");
-	
-	AddMenuItem(menu, "Add Start", "Add Start");
-	AddMenuItem(menu, "Add End", "Add End");
-	AddMenuItem(menu, "Add Bonus Start", "Add Bonus Start");
-	AddMenuItem(menu, "Add Bonus End", "Add Bonus End");
-	AddMenuItem(menu, "Add Free Style Zone", "Add Free Style Zone");
-	AddMenuItem(menu, "Anti-cheat zone", "Anti-cheat zone");
-	AddMenuItem(menu, "Delete zone", "Delete zone");
-	
-	SetMenuExitButton(menu, true);
-	
-	DisplayMenu(menu, GetNativeCell(1), MENU_TIME_FOREVER);
-}
-
-public Native_ZoneExists(Handle:plugin, numParams)
-{
-	new Type = GetNativeCell(1);
-	
-	if(Type == TIMER_MAIN)
-		return g_main_ready[0];
-	
-	if(Type == TIMER_BONUS)
-		return g_bonus_ready[0];
-	
-	return false;
-}
-
-public Native_MainZoneExists(Handle:plugin, numParams)
-{
-	return g_main_ready[0];
-}
-
-public Native_LoadMapZones(Handle:plugin, numParams)
-{
-	DB_LoadZones();
-}
- 
-public AdminMenu_ZoneCtrl(Handle:menu, MenuAction:action, param1, param2)
-{
-	if (action == MenuAction_Select)
-	{
-		new String:info[32];
-		GetMenuItem(menu, param2, info, sizeof(info));
-		
-		if(StrEqual(info, "Add Start"))
-		{
-			if(g_setup[param1] == -1 && g_anticheat_setup[param1] == -1 && g_freestyle_setup[param1] == -1)
-				CreateMainZone(param1, 0, 0);
-			else if(g_setup[param1] == 0 && g_anticheat_setup[param1] == -1 && g_freestyle_setup[param1] == -1)
-				CreateMainZone(param1, 0, 7);
-			else
-				PrintColorText(param1, "%s%sYou can't create two zones at once.",
-					g_msg_start,
-					g_msg_textcol);
-			OpenZoneMenu(param1);
-		}
-		else if(StrEqual(info, "Add End"))
-		{
-			if(g_setup[param1] == -1 && g_anticheat_setup[param1] == -1 && g_freestyle_setup[param1] == -1)
-				CreateMainZone(param1, 1, 0);
-			else if(g_setup[param1] == 1 && g_anticheat_setup[param1] == -1 && g_freestyle_setup[param1] == -1)
-				CreateMainZone(param1, 1, 7);
-			else
-				PrintColorText(param1, "%s%sYou can't create two zones at once.",
-					g_msg_start,
-					g_msg_textcol);
-			OpenZoneMenu(param1);
-		}
-		else if(StrEqual(info, "Add Bonus Start"))
-		{
-			if(g_setup[param1] == -1 && g_anticheat_setup[param1] == -1 && g_freestyle_setup[param1] == -1)
-				CreateBonusZone(param1, 0, 0);
-			else if(g_setup[param1] == 2 && g_anticheat_setup[param1] == -1 && g_freestyle_setup[param1] == -1)
-				CreateBonusZone(param1, 0, 7);
-			else
-				PrintColorText(param1, "%s%sYou can't create two zones at once.",
-					g_msg_start,
-					g_msg_textcol);
-			OpenZoneMenu(param1);
-		}
-		else if(StrEqual(info, "Add Bonus End"))
-		{
-			if(g_setup[param1] == -1 && g_anticheat_setup[param1] == -1 && g_freestyle_setup[param1] == -1)
-				CreateBonusZone(param1, 1, 0);
-			else if(g_setup[param1] == 3 && g_anticheat_setup[param1] == -1 && g_freestyle_setup[param1] == -1)
-				CreateBonusZone(param1, 1, 7);
-			else
-				PrintColorText(param1, "%s%sYou can't create two zones at once.",
-					g_msg_start,
-					g_msg_textcol);
-			OpenZoneMenu(param1);
-		}
-		else if(StrEqual(info, "Add Free Style Zone"))
-		{
-			if(g_freestyle_count < MAX_FREE_STYLE)
-			{
-				if(g_setup[param1] == -1 && g_anticheat_setup[param1] == -1 && g_freestyle_setup[param1] == -1)
-					CreateFreeStyleZone(param1, g_freestyle_count, 0);
-				else if(g_setup[param1] == -1 && g_anticheat_setup[param1] == -1 && g_freestyle_setup[param1] == g_freestyle_count)
-					CreateFreeStyleZone(param1, g_freestyle_count, 7);
-				else
-					PrintColorText(param1, "%s%sYou can't create two zones at once.",
-						g_msg_start,
-						g_msg_textcol);
-			}
-			OpenZoneMenu(param1);
-		}
-		else if(StrEqual(info, "Anti-cheat zone"))
-			AdminCmd_ZoneCtrl_AntiCheatZone(param1);
-		else if(StrEqual(info, "Delete zone"))
-		{
-			for(new i=0; i<g_anticheat_count; i++)
-			{
-				if(IsInsideZone(param1, g_anticheat[i]))
-					DB_DeleteAntiCheatZone(i);
-			}
-			for(new i=0; i<g_freestyle_count; i++)
-			{
-				if(IsInsideZone(param1, g_freestyle[i]))
-					DB_DeleteFreeStyleZone(i);
-			}
-			for(new i=0; i<2; i++)
-			{
-				if(IsInsideZone(param1, g_main[i]))
-				{
-					DB_DeleteZone(i);
-					g_main_ready[i] = false;
-					for(new i2=0; i2<8; i2++)
-						for(new i3=0; i3<3; i3++)
-							g_main[i][i2][i3] = 0.0;
-					
-					for(new client=1; client<=MaxClients; client++)
-					{
-						if(IsClientInGame(client))
-						{
-							if(IsBeingTimed(client, TIMER_MAIN))
-							{
-								StopTimer(client);
-								PrintColorText(client, "%s%sYour timer was stopped because a main zone was deleted",
-									g_msg_start,
-									g_msg_textcol);
-							}
-						}
-					}
-				}
-			}
-			for(new i=0; i<2; i++)
-			{
-				if(IsInsideZone(param1, g_bonus[i]))
-				{
-					DB_DeleteZone(i+2);
-					g_bonus_ready[i] = false;
-					for(new i2=0; i2<8; i2++)
-						for(new i3=0; i3<3; i3++)
-							g_bonus[i][i2][i3] = 0.0;
-						
-					for(new client=1; client<=MaxClients; client++)
-					{
-						if(IsClientInGame(client))
-						{
-							if(IsBeingTimed(client, TIMER_BONUS))
-							{
-								StopTimer(client);
-								PrintColorText(client, "%s%sYour timer was stopped because a bonus zone was deleted",
-									g_msg_start,
-									g_msg_textcol);
-							}
-						}
-					}
-				}
-			}
-			OpenZoneMenu(param1);
-		}
-	}
-	else if (action == MenuAction_End)
-		CloseHandle(menu);
-}
-
-AdminCmd_ZoneCtrl_AntiCheatZone(client)
-{
-	new Handle:menu = CreateMenu(AdminMenu_ZoneCtrl_AntiCheatZone);
-	
-	SetMenuTitle(menu, "Anti-cheat zone");
-	AddMenuItem(menu, "Add zone", "Add zone");
-	AddMenuItem(menu, "Go to zone", "Go to zone");
-	AddMenuItem(menu, "View/Hide zones", "View/Hide zones");
-	
-	SetMenuExitBackButton(menu, true);
-	SetMenuExitButton(menu, true);
-	
-	DisplayMenu(menu, client, MENU_TIME_FOREVER);
-}
-
-public AdminMenu_ZoneCtrl_AntiCheatZone(Handle:menu, MenuAction:action, param1, param2)
-{
-	if (action == MenuAction_Select)
-	{
-		decl String:info[32];
-		GetMenuItem(menu, param2, info, sizeof(info));
-		if(StrEqual(info, "Add zone"))
-		{
-			if(g_anticheat_count < MAX_ANTI_CHEATS)
-			{
-				if(g_anticheat_setup[param1] == -1 && g_setup[param1] == -1 && g_freestyle_setup[param1] == -1)
-					CreateAntiCheatZone(param1, g_anticheat_count, 0);
-				else if(g_anticheat_setup[param1] == g_anticheat_count && g_setup[param1] == -1 && g_freestyle_setup[param1] == -1)
-					CreateAntiCheatZone(param1, g_anticheat_count, 7);
-				else
-					PrintColorText(param1, "%s%sYou can't create two zones at once",
-						g_msg_start,
-						g_msg_textcol);
-				AdminCmd_ZoneCtrl_AntiCheatZone(param1);
-			}
-			else
-			{
-				PrintColorText(param1, "%s%sToo many anti-cheats. The limit is %d",
-					g_msg_start,
-					g_msg_textcol,
-					MAX_ANTI_CHEATS);
-			}
-		}
-		else if(StrEqual(info, "Go to zone"))
-		{
-			if(g_anticheat_count != 0)
-			{
-				AdminCmd_ZoneCtrl_AntiCheatZone_Goto(param1);
-			}
-			else
-			{
-				PrintColorText(param1, "%s%sThere are no Anti-cheat zones",
-					g_msg_start,
-					g_msg_textcol);
-				AdminCmd_ZoneCtrl_AntiCheatZone(param1);
-			}
-		}
-		else if(StrEqual(info, "View/Hide zones"))
-		{
-			g_anticheat_view[param1] = !g_anticheat_view[param1];
-			AdminCmd_ZoneCtrl_AntiCheatZone(param1);
-		}
-	}
-	else if (action == MenuAction_Cancel)
-	{
-		if(param2 == MenuCancel_ExitBack)
-			OpenZoneMenu(param1);
-	}
-	else if (action == MenuAction_End)
-		CloseHandle(menu);
-}
-
-AdminCmd_ZoneCtrl_AntiCheatZone_Goto(client)
-{
-	new Handle:menu = CreateMenu(AdminMenu_ZoneCtrl_AntiCheatZone_Goto);
-	decl String:item[32];
-	SetMenuTitle(menu, "Go to Anti-cheat zone:");
-	for(new i=0; i<g_anticheat_count; i++)
-	{
-		Format(item, sizeof(item), "Anti-cheat %d", i+1);
-		AddMenuItem(menu, item, item);
-	}
-	SetMenuExitBackButton(menu, true);
-	SetMenuExitButton(menu, true);
-	DisplayMenu(menu, client, MENU_TIME_FOREVER);
-}
-
-public AdminMenu_ZoneCtrl_AntiCheatZone_Goto(Handle:menu, MenuAction:action, param1, param2)
-{
-	if (action == MenuAction_Select)
-	{
-		decl String:info[32], String:item[32];
-		
-		GetMenuItem(menu, param2, info, sizeof(info));
-		
-		for(new i=0; i<g_anticheat_count; i++)
-		{
-			Format(item, sizeof(item), "Anti-cheat %d", i+1);
-			if(StrEqual(info, item))
-				TeleportToZone(param1, g_anticheat[i][0], g_anticheat[i][7]);
-		}
-		
-		AdminCmd_ZoneCtrl_AntiCheatZone_Goto(param1);
-	}
-	else if (action == MenuAction_Cancel)
-	{
-		if(param2 == MenuCancel_ExitBack)
-			AdminCmd_ZoneCtrl_AntiCheatZone(param1);
-	}
-	else if (action == MenuAction_End)
-		CloseHandle(menu);
-}
-
-public Action:TeleportToMain(client, args)
-{
-	if(g_main_ready[0] == true)
+	if(g_Properties[MAIN_START][Ready][0] == true)
 	{
 		StopTimer(client);
-		TeleportToZone(client, g_main[0][0], g_main[0][7]);
+		TeleportToZone(client, MAIN_START, 0, true);
 		
-		if(g_main_ready[1] == true)
+		if(g_Properties[MAIN_END][Ready][0] == true)
 		{
 			StartTimer(client, TIMER_MAIN);
 		}
 	}
 	else
 	{
-		PrintColorText(client, "%s%sThe start zone isn't ready yet",
+		PrintColorText(client, "%s%sThe main start zone is not ready yet.",
 			g_msg_start,
 			g_msg_textcol);
 	}
-			
+	
 	return Plugin_Handled;
 }
 
-public Action:TeleportToMainEnd(client, args)
+public Action:SM_End(client, args)
 {
-	if(g_main_ready[1] == true)
+	if(g_Properties[MAIN_END][Ready][0] == true)
 	{
 		StopTimer(client);
-		TeleportToZone(client, g_main[1][0], g_main[1][7]);
+		TeleportToZone(client, MAIN_END, 0, true);
 	}
 	else
 	{
-		PrintColorText(client, "%s%sThe end zone hasn't been added yet",
+		PrintColorText(client, "%s%sThe main end zone is not ready yet.",
 			g_msg_start,
 			g_msg_textcol);
 	}
-			
+	
 	return Plugin_Handled;
 }
 
-public Action:TeleportToBonus(client, args)
+public Action:SM_B(client, args)
 {
-	if(g_bonus_ready[0] == true)
+	if(g_Properties[BONUS_START][Ready][0] == true)
 	{
 		StopTimer(client);
-		TeleportToZone(client, g_bonus[0][0], g_bonus[0][7]);
+		TeleportToZone(client, BONUS_START, 0, true);
 		
-		if(g_bonus_ready[1] == true)
+		if(g_Properties[BONUS_END][Ready][0] == true)
 		{
 			StartTimer(client, TIMER_BONUS);
 		}
 	}
 	else
 	{
-		PrintColorText(client, "%s%sThe bonus zone hasn't been added",
+		PrintColorText(client, "%s%sThe bonus zone has not been created.",
 			g_msg_start,
 			g_msg_textcol);
 	}
-
+	
 	return Plugin_Handled;
 }
 
-public Action:TeleportToBonusEnd(client, args)
+public Action:SM_EndB(client, args)
 {
-	if(g_bonus_ready[1] == true)
+	if(g_Properties[BONUS_END][Ready][0] == true)
 	{
 		StopTimer(client);
-		TeleportToZone(client, g_bonus[1][0], g_bonus[1][7]);
+		TeleportToZone(client, BONUS_END, 0, true);
 	}
 	else
 	{
-		PrintColorText(client, "%s%sThe bonus end zone hasn't been added",
+		PrintColorText(client, "%s%sThe bonus end zone has not been created.",
 			g_msg_start,
 			g_msg_textcol);
 	}
-			
+	
 	return Plugin_Handled;
 }
 
-/*
-* Teleports a player to the center lowest point of a zone
-*/
-TeleportToZone(client, Float:point1[3], Float:point2[3])
+public Action:SM_Zones(client, args)
 {
-	new Float:position[3], Float:angle[3];
+	OpenZonesMenu(client);
 	
-	position[0] = (point1[0]+point2[0])/2;
-	position[1] = (point1[1]+point2[1])/2;
-	position[2] = (point1[2]<point2[2])?point1[2]:point2[2];
-	
-	GetClientEyeAngles(client, angle);
-	TeleportEntity(client, position, angle, Float:{0, 0, 0});
+	return Plugin_Handled;
 }
 
-/*
-* Generates all 8 points of a zone given just 2 of its points
-*/
-CreateZonePoints(Float:point[8][3])
+OpenZonesMenu(client)
+{
+	new Handle:menu = CreateMenu(Menu_Zones);
+	
+	SetMenuTitle(menu, "Zone Control");
+	
+	AddMenuItem(menu, "add", "Add a zone");
+	AddMenuItem(menu, "goto", "Go to zone");
+	AddMenuItem(menu, "del", "Delete a zone");
+	AddMenuItem(menu, "set", "Set zone flags");
+	AddMenuItem(menu, "snap", g_Setup[client][Snapping]?"Wall Snapping: On":"Wall Snapping: Off");
+	
+	decl String:sDisplay[64];
+	IntToString(g_Setup[client][GridSnap], sDisplay, sizeof(sDisplay));
+	Format(sDisplay, sizeof(sDisplay), "Grid Snapping: %s", sDisplay);
+	AddMenuItem(menu, "grid", sDisplay);
+	AddMenuItem(menu, "ac", g_Setup[client][ViewAnticheats]?"Anti-cheats: Visible":"Anti-cheats: Invisible");
+	
+	DisplayMenu(menu, client, MENU_TIME_FOREVER);
+	
+	g_Setup[client][InZonesMenu] = true;
+}
+
+public Menu_Zones(Handle:menu, MenuAction:action, client, param2)
+{
+	if(action & MenuAction_Select)
+	{
+		decl String:info[32];
+		GetMenuItem(menu, param2, info, sizeof(info));
+		
+		if(StrEqual(info, "add"))
+		{
+			OpenAddZoneMenu(client);
+		}
+		else if(StrEqual(info, "goto"))
+		{
+			OpenGoToMenu(client);
+		}
+		else if(StrEqual(info, "del"))
+		{
+			OpenDeleteMenu(client);
+		}
+		else if(StrEqual(info, "set"))
+		{
+			OpenSetFlagsMenu(client);
+		}
+		else if(StrEqual(info, "snap"))
+		{
+			g_Setup[client][Snapping] = !g_Setup[client][Snapping];
+			OpenZonesMenu(client);
+		}
+		else if(StrEqual(info, "grid"))
+		{
+			g_Setup[client][GridSnap] *= 2;
+				
+			if(g_Setup[client][GridSnap] > 64)
+				g_Setup[client][GridSnap] = 1;
+			
+			OpenZonesMenu(client);
+		}
+		else if(StrEqual(info, "ac"))
+		{
+			g_Setup[client][ViewAnticheats] = !g_Setup[client][ViewAnticheats];
+			OpenZonesMenu(client);
+		}
+	}
+	
+	if(action & MenuAction_End)
+	{
+		CloseHandle(menu);
+	}
+	
+	if(action & MenuAction_Cancel)
+	{
+		if(param2 == MenuCancel_Exit)
+		{
+			g_Setup[client][InZonesMenu] = false;
+		}
+	}
+}
+
+OpenAddZoneMenu(client)
+{
+	new Handle:menu = CreateMenu(Menu_AddZone);
+	SetMenuTitle(menu, "Add a Zone");
+	
+	decl String:sInfo[8];
+	for(new Zone; Zone < ZONE_COUNT; Zone++)
+	{
+		IntToString(Zone, sInfo, sizeof(sInfo));
+		AddMenuItem(menu, sInfo, g_Properties[Zone][Name]);
+	}
+	
+	SetMenuExitBackButton(menu, true);
+	DisplayMenu(menu, client, MENU_TIME_FOREVER);
+}
+
+public Menu_AddZone(Handle:menu, MenuAction:action, client, param2)
+{
+	if(action == MenuAction_Select)
+	{
+		decl String:info[32];
+		GetMenuItem(menu, param2, info, sizeof(info));
+		
+		CreateZone(client, StringToInt(info));
+		
+		OpenAddZoneMenu(client);
+	}
+	else if(action == MenuAction_Cancel)
+	{
+		if(param2 == MenuCancel_ExitBack)
+			OpenZonesMenu(client);
+	}
+	else if(action == MenuAction_End)
+	{
+		CloseHandle(menu);
+	}
+	
+	if(action & MenuAction_Cancel)
+	{
+		if(param2 == MenuCancel_Exit)
+		{
+			g_Setup[client][InZonesMenu] = false;
+		}
+	}
+}
+
+CreateZone(client, Zone)
+{
+	if(ClientCanCreateZone(client, Zone))
+	{
+		if((g_Properties[Zone][Count] < g_Properties[Zone][Max]) || g_Properties[Zone][Replaceable] == true)
+		{
+			new ZoneNumber;
+			
+			if(g_Properties[Zone][Count] >= g_Properties[Zone][Max])
+				ZoneNumber = 0;
+			else
+				ZoneNumber = g_Properties[Zone][Count];
+			
+			if(g_Setup[client][CurrentZone] == -1)
+			{
+				if(g_Properties[Zone][Ready][ZoneNumber] == true)
+					DB_DeleteZone(client, Zone, ZoneNumber);
+				
+				if(Zone == ANTICHEAT)
+					g_Setup[client][ViewAnticheats] = true;
+				
+				g_Setup[client][CurrentZone] = Zone;
+				
+				GetZoneSetupPosition(client, g_Zones[Zone][ZoneNumber][0]);
+				
+				new Handle:data;
+				g_Setup[client][SetupTimer] = CreateDataTimer(0.1, Timer_ZoneSetup, data, TIMER_REPEAT|TIMER_FLAG_NO_MAPCHANGE);
+				WritePackCell(data, GetClientUserId(client));
+				WritePackCell(data, ZoneNumber);
+			}
+			else if(g_Setup[client][CurrentZone] == Zone)
+			{	
+				if(g_Properties[Zone][Count] < g_Properties[Zone][Max])
+				{
+					g_Properties[Zone][Count]++;
+					g_TotalZoneCount++;
+				}
+				
+				KillTimer(g_Setup[client][SetupTimer], true);
+				
+				GetZoneSetupPosition(client, g_Zones[Zone][ZoneNumber][7]);
+					
+				g_Zones[Zone][ZoneNumber][7][2] += g_Properties[Zone][Offset];
+				
+				g_Setup[client][CurrentZone] = -1;
+				g_Properties[Zone][Ready][ZoneNumber] = true;
+				
+				DB_SaveZone(Zone, ZoneNumber);
+				
+				if(g_Properties[Zone][TriggerBased] == true)
+					CreateZoneTrigger(Zone, ZoneNumber);
+			}
+			else
+			{
+				PrintColorText(client, "%s%sYou are already setting up a different zone (%s%s%s).",
+					g_msg_start,
+					g_msg_textcol,
+					g_msg_varcol,
+					g_Properties[g_Setup[client][CurrentZone]][Name],
+					g_msg_textcol);
+			}
+		}
+		else
+		{
+			PrintColorText(client, "%s%sThere are too many of this zone (Max %s%d%s).",
+				g_msg_start,
+				g_msg_textcol,
+				g_msg_varcol,
+				g_Properties[Zone][Max],
+				g_msg_textcol);
+		}
+	}
+	else
+	{
+		PrintColorText(client, "%s%sSomeone else is already creating this zone (%s%s%s).",
+			g_msg_start,
+			g_msg_textcol,
+			g_msg_varcol,
+			g_Properties[Zone][Name],
+			g_msg_textcol);
+	}
+}
+
+bool:ClientCanCreateZone(client, Zone)
+{
+	for(new i = 1; i <= MaxClients; i++)
+	{
+		if(g_Setup[i][CurrentZone] == Zone && client != i)
+		{
+			return false;
+		}
+	}
+	
+	return true;
+}
+
+public Action:Timer_ZoneSetup(Handle:timer, Handle:pack)
+{
+	ResetPack(pack);
+	new client = GetClientOfUserId(ReadPackCell(pack));
+	
+	if(client != 0)
+	{
+		new ZoneNumber = ReadPackCell(pack);
+		new Zone       = g_Setup[client][CurrentZone];
+		
+		// Get setup position
+		GetZoneSetupPosition(client, g_Zones[Zone][ZoneNumber][7]);
+		g_Zones[Zone][ZoneNumber][7][2] += g_Properties[Zone][Offset];
+		
+		// Draw zone
+		CreateZonePoints(g_Zones[Zone][ZoneNumber]);
+		DrawZone(Zone, ZoneNumber, 0.1);
+	}
+	else
+	{
+		KillTimer(timer, true);
+	}
+}
+
+CreateZonePoints(Float:Zone[8][3])
 {
 	for(new i=1; i<7; i++)
 	{
 		for(new j=0; j<3; j++)
 		{
-			point[i][j] = point[((i >> (2-j)) & 1) * 7][j];
+			Zone[i][j] = Zone[((i >> (2 - j)) & 1) * 7][j];
 		}
 	}
 }
- 
-/*
-* Graphically draws a zone
-*	if client == 0, it draws it for all players in the game
-*   if client index is between 0 and MaxClients+1, it draws for the specified client
-*/
-DrawZone(client, Float:array[8][3], beamsprite, halosprite, color[4], Float:life)
+
+DrawZone(Zone, ZoneNumber, Float:life)
 {
+	new color[4];
+	
+	for(new i = 0; i < 4; i++)
+		color[i] = g_Properties[Zone][Color][i];
+	
 	for(new i=0, i2=3; i2>=0; i+=i2--)
 	{
 		for(new j=1; j<=7; j+=(j/2)+1)
 		{
 			if(j != 7-i)
 			{
-				TE_SetupBeamPoints(array[i], array[j], beamsprite, halosprite, 0, 0, life, 5.0, 5.0, 0, 0.0, color, 0);
-				if(0 < client <= MaxClients)
-					TE_SendToClient(client, 0.0);
+				TE_SetupBeamPoints(g_Zones[Zone][ZoneNumber][i], g_Zones[Zone][ZoneNumber][j], g_Properties[Zone][ModelIndex], g_Properties[Zone][HaloIndex], 0, 0, (life < 0.1)?0.1:life, 5.0, 5.0, 10, 0.0, color, 0);
+				
+				new clients[MaxClients], numClients;
+				
+				switch(Zone)
+				{
+					case MAIN_START, MAIN_END, BONUS_START, BONUS_END, FREESTYLE:
+					{
+						TE_SendToAll();
+					}
+					case ANTICHEAT:
+					{
+						for(new client = 1; client <= MaxClients; client++)
+							if(IsClientInGame(client) && g_Setup[client][ViewAnticheats] == true)
+								clients[numClients++] = client;
+						
+						if(numClients > 0)
+							TE_Send(clients, numClients);
+					}
+				}
+			}
+		}
+	}
+}
+
+public Action:Timer_DrawBeams(Handle:timer, any:data)
+{
+	// Draw 4 zones (32 temp ents limit) per timer frame so all zones will draw
+	if(g_TotalZoneCount > 0)
+	{
+		new ZonesDrawnThisFrame;
+		
+		for(new cycle; cycle < ZONE_COUNT; g_Drawing_Zone = (g_Drawing_Zone + 1) % ZONE_COUNT, cycle++)
+		{
+			for(; g_Drawing_ZoneNumber < g_Properties[g_Drawing_Zone][Count]; g_Drawing_ZoneNumber++)
+			{	
+				if(g_Properties[g_Drawing_Zone][Ready][g_Drawing_ZoneNumber] == true)
+				{
+					DrawZone(g_Drawing_Zone, g_Drawing_ZoneNumber, (float(g_TotalZoneCount)/40.0) + 0.3);
+					
+					if(++ZonesDrawnThisFrame == 4)
+					{
+						g_Drawing_ZoneNumber++;
+						
+						return Plugin_Continue;
+					}
+				}
+			}
+			
+			g_Drawing_ZoneNumber = 0;
+		}
+	}
+	
+	return Plugin_Continue;
+}
+
+CreateZoneTrigger(Zone, ZoneNumber)
+{	
+	new entity = CreateEntityByName("trigger_multiple");
+	if(entity != -1)
+	{
+		DispatchKeyValue(entity, "spawnflags", "4097");
+		
+		DispatchSpawn(entity);
+		ActivateEntity(entity);
+		
+		new Float:fPos[3];
+		GetZonePosition(Zone, ZoneNumber, fPos);
+		TeleportEntity(entity, fPos, NULL_VECTOR, NULL_VECTOR);
+		
+		SetEntityModel(entity, "models/props/cs_office/vending_machine.mdl");
+		
+		new Float:fBounds[2][3];
+		GetMinMaxBounds(Zone, ZoneNumber, fBounds);
+		SetEntPropVector(entity, Prop_Send, "m_vecMins", fBounds[0]);
+		SetEntPropVector(entity, Prop_Send, "m_vecMaxs", fBounds[1]);
+		
+		SetEntProp(entity, Prop_Send, "m_nSolidType", 2);
+		SetEntProp(entity, Prop_Send, "m_fEffects", GetEntProp(entity, Prop_Send, "m_fEffects") | 32);
+		
+		g_Entities_ZoneType[entity]            = Zone;
+		g_Entities_ZoneNumber[entity]          = ZoneNumber;
+		g_Properties[Zone][Entity][ZoneNumber] = entity;
+		
+		SDKHook(entity, SDKHook_StartTouch, Hook_StartTouch);
+		SDKHook(entity, SDKHook_EndTouch, Hook_EndTouch);
+		SDKHook(entity, SDKHook_Touch, Hook_Touch);
+	}
+}
+
+public Action:Hook_StartTouch(entity, other)
+{
+	// Anti-cheats, freestyles, and end zones
+	new Zone       = g_Entities_ZoneType[entity];
+	new ZoneNumber = g_Entities_ZoneNumber[entity];
+	
+	if(0 < other <= MaxClients)
+	{
+		if(IsClientInGame(other))
+		{
+			if(IsPlayerAlive(other))
+			{
+				if(g_Properties[Zone][TriggerBased] == true)
+				{
+					g_bInside[other][Zone][ZoneNumber] = true;
+					
+					switch(Zone)
+					{
+						case MAIN_END:
+						{
+							if(IsBeingTimed(other, TIMER_MAIN))
+								FinishTimer(other);
+						}
+						case BONUS_END:
+						{
+							if(IsBeingTimed(other, TIMER_BONUS))
+								FinishTimer(other);
+						}
+						case ANTICHEAT:
+						{
+							if(IsBeingTimed(other, TIMER_MAIN) && (g_Properties[Zone][Flags][ZoneNumber] & FLAG_ANTICHEAT_MAIN))
+							{
+								StopTimer(other);
+								
+								PrintColorText(other, "%s%sYour timer was stopped for using a shortcut.",
+									g_msg_start,
+									g_msg_textcol);
+							}
+							
+							if(IsBeingTimed(other, TIMER_BONUS) && (g_Properties[Zone][Flags][ZoneNumber] & FLAG_ANTICHEAT_BONUS))
+							{
+								StopTimer(other);
+								
+								PrintColorText(other, "%s%sYour timer was stopped for using a shortcut.",
+									g_msg_start,
+									g_msg_textcol);
+							}
+						}
+					}
+				}
+			}
+			
+			if(g_Setup[other][InSetFlagsMenu] == true)
+				if(Zone == ANTICHEAT || Zone == FREESTYLE)
+					OpenSetFlagsMenu(other, Zone, ZoneNumber);
+		}
+	}
+}
+
+public Action:Hook_EndTouch(entity, other)
+{
+	new Zone       = g_Entities_ZoneType[entity];
+	new ZoneNumber = g_Entities_ZoneNumber[entity];
+	
+	if(g_Properties[Zone][TriggerBased] == true && (0 < other <= MaxClients))
+	{
+		g_bInside[other][Zone][ZoneNumber] = false;
+	}
+}
+
+public Action:Hook_Touch(entity, other)
+{
+	// Anti-prespeed (Start zones)
+	new Zone = g_Entities_ZoneType[entity];
+	
+	if(g_Properties[Zone][TriggerBased] == true && (0 < other <= MaxClients))
+	{
+		if(IsClientInGame(other))
+		{	
+			if(IsPlayerAlive(other))
+			{
+				switch(Zone)
+				{
+					case MAIN_START:
+					{						
+						if(g_Properties[MAIN_END][Ready][0] == true)
+							StartTimer(other, TIMER_MAIN);
+					}
+					case BONUS_START:
+					{
+						if(g_Properties[BONUS_END][Ready][0] == true)
+							StartTimer(other, TIMER_BONUS);
+					}
+				}
+			}
+		}
+	}
+}
+
+GetZoneSetupPosition(client, Float:fPos[3])
+{
+	new bool:bSnapped;
+	
+	if(g_Setup[client][Snapping] == true)
+		bSnapped = GetWallSnapPosition(client, fPos);
+		
+	if(bSnapped == false)
+		GetGridSnapPosition(client, fPos);
+}
+
+GetGridSnapPosition(client, Float:fPos[3])
+{
+	Entity_GetAbsOrigin(client, fPos);
+	
+	for(new i = 0; i < 2; i++)
+		fPos[i] = float(RoundFloat(fPos[i] / float(g_Setup[client][GridSnap])) * g_Setup[client][GridSnap]);
+	
+	// Snap to z axis only if the client is off the ground
+	if(!(GetEntityFlags(client) & FL_ONGROUND))
+		fPos[2] = float(RoundFloat(fPos[2] / float(g_Setup[client][GridSnap])) * g_Setup[client][GridSnap]);
+}
+
+public Action:Timer_SnapPoint(Handle:timer, any:data)
+{
+	new Float:fSnapPos[3], Float:fClientPos[3];
+	
+	for(new client = 1; client <= MaxClients; client++)
+	{
+		if(IsClientInGame(client) && !IsFakeClient(client) && g_Setup[client][InZonesMenu])
+		{
+			Entity_GetAbsOrigin(client, fClientPos);
+			GetZoneSetupPosition(client, fSnapPos);
+			
+			if(GetVectorDistance(fClientPos, fSnapPos) > 0)
+			{
+				TE_SetupBeamPoints(fClientPos, fSnapPos, g_SnapModelIndex, g_SnapHaloIndex, 0, 0, 0.1, 5.0, 5.0, 0, 0.0, {0, 255, 255, 255}, 0);
+				TE_SendToAll();
+			}
+		}
+	}
+}
+
+bool:GetWallSnapPosition(client, Float:fPos[3])
+{
+	GetEntPropVector(client, Prop_Send, "m_vecOrigin", fPos);
+	
+	new Float:fHitPos[3], Float:vAng[3], bool:bSnapped;
+	
+	for(; vAng[1] < 360; vAng[1] += 90)
+	{
+		TR_TraceRayFilter(fPos, vAng, MASK_PLAYERSOLID_BRUSHONLY, RayType_Infinite, TraceRayDontHitSelf, client);
+		
+		if(TR_DidHit())
+		{
+			TR_GetEndPosition(fHitPos);
+			
+			if(GetVectorDistance(fPos, fHitPos) < 17)
+			{
+				if(vAng[1] == 0 || vAng[1] == 180)
+				{
+					// Change x
+					fPos[0] = fHitPos[0];
+				}
 				else
-					TE_SendToAll(0.0);
-			}
-		}
-	}
-}
-
-/*
-* returns true if a player is inside the given zone
-* returns false if they aren't in it
-*/
-bool:IsInsideZone(client, Float:point[8][3])
-{
-	new Float:playerPos[3];
-	
-	GetEntPropVector(client, Prop_Send, "m_vecOrigin", playerPos);
-	
-	// Add 5 units to a player's height or it won't work
-	playerPos[2] += 5.0;
-	
-	for(new i=0; i<3; i++)
-	{
-		if(point[0][i]>=playerPos[i] == point[7][i]>=playerPos[i])
-		{
-			return false;
-		}
-	}
-
-	return true;
-}
-
-/*
-* To tell if players will trigger the action this zone causes
-*/
-EnableZone(&bool:zoneready, bool:enable)
-{
-	zoneready = enable;
-}
-
-/*
-* Makes a zone constantly update between a timer admin 
-* setting up a zone and their 1st corner
-*/
-TrackZoneSetup(&setup, zone)
-{
-	setup = zone;
-}
-
-/*
-* Tells a timer admin if they are allowed to set up a zone
-* returns: 
-*	0 if they are allowed to set it up
-*	client index of timer admin already setting up this zone
-*/
-CanSetup(client, zone)
-{
-	for(new i=0; i<=MaxClients; i++)
-	{
-		if((g_setup[i] == zone) && (i != client))
-		{
-			return i;
-		}
-	}
-	return 0;
-}
-
-/*
-* Creates the start/end main zones
-*/
-CreateMainZone(client, type, corner)
-{
-	new canset = CanSetup(client, type);
-	if(canset != 0)
-	{
-		decl String:targetname[MAX_NAME_LENGTH];
-		GetClientName(canset, targetname, sizeof(targetname));
-		PrintColorText(client, "%s%s%s %sis already creating %s%s",
-			g_msg_start,
-			g_msg_varcol,
-			targetname,
-			g_msg_textcol,
-			g_msg_varcol,
-			g_main_names[type]);
-		return;
-	}
-	if(corner == 0)
-	{
-		//StopTimers(Main);
-		EnableZone(g_main_ready[type], false);
-		GetEntPropVector(client, Prop_Send, "m_vecOrigin", g_main[type][corner]);
-		TrackZoneSetup(g_setup[client], type);
-	}
-	else if(corner == 7)
-	{
-		if(g_setup[client] != type)
-		{
-			PrintColorText(client, "%s%sYou must set up corner one of %s%s %sfirst",
-				g_msg_start,
-				g_msg_textcol,
-				g_msg_varcol,
-				g_main_names[type],
-				g_msg_textcol);
-			return;
-		}
-		GetEntPropVector(client, Prop_Send, "m_vecOrigin", g_main[type][corner]);
-		g_main[type][corner][2] += 128.0;
-		TrackZoneSetup(g_setup[client], -1);
-		CreateZonePoints(g_main[type]);
-		DB_DeleteZone(type);
-		DB_AddZone(type, g_main[type]);
-		EnableZone(g_main_ready[type], true);
-	}
-}
-
-/*
-* Creates the start/end bonus zones
-*/
-CreateBonusZone(client, type, corner)
-{
-	new canset = CanSetup(client, type+2);
-	if(canset != 0)
-	{
-		decl String:targetname[MAX_NAME_LENGTH];
-		GetClientName(canset, targetname, sizeof(targetname));
-		PrintColorText(client, "%s%s%s %sis already creating %s%s",
-			g_msg_start,
-			g_msg_varcol,
-			targetname,
-			g_msg_textcol,
-			g_msg_varcol,
-			g_bonus_names[type]);
-		return;
-	}
-	if(corner == 0)
-	{
-		//StopTimers(Bonus);
-		EnableZone(g_bonus_ready[type], false);
-		GetEntPropVector(client, Prop_Send, "m_vecOrigin", g_bonus[type][corner]);
-		TrackZoneSetup(g_setup[client], type+2);
-	}
-	else if(corner == 7)
-	{
-		if(g_setup[client] != (type+2))
-		{
-			PrintColorText(client, "%s%sYou must set up corner one of %s%s %sfirst",
-				g_msg_start,
-				g_msg_textcol,
-				g_msg_varcol,
-				g_bonus_names[type],
-				g_msg_textcol);
-			return;
-		}
-		GetEntPropVector(client, Prop_Send, "m_vecOrigin", g_bonus[type][corner]);
-		g_bonus[type][corner][2] += 128.0;
-		TrackZoneSetup(g_setup[client], -1);
-		CreateZonePoints(g_bonus[type]);
-		DB_DeleteZone(type+2);
-		DB_AddZone(type+2, g_bonus[type]);
-		EnableZone(g_bonus_ready[type], true);
-	}
-}
-
-/*
-* Creates the anti-cheat zones
-*/
-CreateAntiCheatZone(client, zone, corner)
-{
-	new canset = CanSetup(client, zone);
-	if(canset != 0)
-	{
-		decl String:targetname[MAX_NAME_LENGTH];
-		GetClientName(canset, targetname, sizeof(targetname));
-		PrintColorText(client, "%s%s%s%s is already creating an %sAnti-cheat zone",
-			g_msg_start,
-			g_msg_varcol,
-			targetname,
-			g_msg_textcol,
-			g_msg_varcol);
-		return;
-	}
-	if(corner == 0)
-	{
-		g_anticheat_view[client] = true;
-		GetEntPropVector(client, Prop_Send, "m_vecOrigin", g_anticheat[zone][corner]);
-		TrackZoneSetup(g_anticheat_setup[client], zone);
-	}
-	else if(corner == 7)
-	{
-		GetEntPropVector(client, Prop_Send, "m_vecOrigin", g_anticheat[zone][corner]);
-		TrackZoneSetup(g_anticheat_setup[client], -1);
-		CreateZonePoints(g_anticheat[zone]);
-		DB_AddZone(4, g_anticheat[zone]);
-		g_anticheat_count++;
-	}
-}
-
-CreateFreeStyleZone(client, zone, corner)
-{
-	new canset = CanSetup(client, zone);
-	if(canset != 0)
-	{
-		decl String:targetname[MAX_NAME_LENGTH];
-		GetClientName(canset, targetname, sizeof(targetname));
-		PrintColorText(client, "%s%s%s%s is already creating an %sFree style zone",
-			g_msg_start,
-			g_msg_varcol,
-			targetname,
-			g_msg_textcol,
-			g_msg_varcol);
-		return;
-	}
-	if(corner == 0)
-	{
-		GetEntPropVector(client, Prop_Send, "m_vecOrigin", g_freestyle[zone][corner]);
-		TrackZoneSetup(g_freestyle_setup[client], zone);
-	}
-	else if(corner == 7)
-	{
-		GetEntPropVector(client, Prop_Send, "m_vecOrigin", g_freestyle[zone][corner]);
-		TrackZoneSetup(g_freestyle_setup[client], -1);
-		CreateZonePoints(g_freestyle[zone]);
-		DB_AddZone(5, g_freestyle[zone]);
-		g_freestyle_count++;
-	}
-}
-
-/*
-* Loops beams to clients
-* Updates at different times to bypass the TempEnt limit of 32/update
-*/
-public Action:LoopBeams(Handle:timer, any:data)
-{
-	for(new client=1; client<=MaxClients; client++)
-	{
-		if(IsClientInGame(client))
-		{
-			if(g_setup[client] == 0 || g_setup[client] == 1)
-			{
-				GetEntPropVector(client, Prop_Send, "m_vecOrigin", g_main[g_setup[client]][7]);
-				g_main[g_setup[client]][7][2] += 128.0;
-				CreateZonePoints(g_main[g_setup[client]]);
-				DrawZone(0, g_main[g_setup[client]], g_main_BeamSprite, g_main_HaloSprite, g_main_color[g_setup[client]], Float:0.3);
-			}
-			else if(g_setup[client] == 2 || g_setup[client] == 3)
-			{
-				GetEntPropVector(client, Prop_Send, "m_vecOrigin", g_bonus[g_setup[client]%2][7]);
-				g_bonus[g_setup[client]%2][7][2] += 128.0;
-				CreateZonePoints(g_bonus[g_setup[client]%2]);
-				DrawZone(0, g_bonus[g_setup[client]%2], g_bonus_BeamSprite, g_bonus_HaloSprite, g_bonus_color[g_setup[client]%2], Float:0.3);
-			}
-			
-			if(g_anticheat_setup[client] != -1)
-			{
-				GetEntPropVector(client, Prop_Send, "m_vecOrigin", g_anticheat[g_anticheat_setup[client]][7]);
-				CreateZonePoints(g_anticheat[g_anticheat_setup[client]]);
-				DrawZone(client, g_anticheat[g_anticheat_setup[client]], g_anticheat_BeamSprite, g_anticheat_HaloSprite, g_anticheat_color, Float:0.3);
-			}
-			
-			if(g_freestyle_setup[client] != -1)
-			{
-				GetEntPropVector(client, Prop_Send, "m_vecOrigin", g_freestyle[g_freestyle_setup[client]][7]);
-				CreateZonePoints(g_freestyle[g_freestyle_setup[client]]);
-				DrawZone(client, g_freestyle[g_freestyle_setup[client]], g_freestyle_BeamSprite, g_freestyle_HaloSprite, g_freestyle_color, Float:0.3);
-			}
-			
-			if(g_anticheat_view[client] == true && g_anticheat_count != 0)
-			{
-				DrawZone(client, g_anticheat[g_modulate_ac], g_anticheat_BeamSprite, g_anticheat_HaloSprite, g_anticheat_color, (float(g_anticheat_count)/10.0)+0.2);
+				{
+					// Change y
+					fPos[1] = fHitPos[1];
+				}
+				
+				bSnapped = true;
 			}
 		}
 	}
 	
-	for(new x=0; x<2; x++)
-	{
-		if(g_main_ready[x] == true && g_update == false)
-			DrawZone(0, g_main[x], g_main_BeamSprite, g_main_HaloSprite, g_main_color[x], Float:0.4);
-		if(g_bonus_ready[x] == true && g_update == true)
-			DrawZone(0, g_bonus[x], g_bonus_BeamSprite, g_bonus_HaloSprite, g_bonus_color[x], Float:0.4);
-	}
-	
-	if(g_freestyle_count != 0)
-	{
-		DrawZone(0, g_freestyle[g_modulate_f], g_freestyle_BeamSprite, g_freestyle_HaloSprite, g_freestyle_color, (float(g_freestyle_count)/10.0)+0.2);
-	}
-	
-	g_modulate_ac  = (g_anticheat_count==0)?0:(g_modulate_ac+1)%g_anticheat_count;
-	g_modulate_f   = (g_freestyle_count==0)?0:(g_modulate_f+1)%g_freestyle_count;
-	g_update       = !g_update;
+	return bSnapped;
 }
 
 public bool:TraceRayDontHitSelf(entity, mask, any:data)
 {
-	if(entity == data)
-		return false;
-	
-	return true;
+	return entity != data;
 }
 
-/*
-* Connects to the database
-*/
+GetZonePosition(Zone, ZoneNumber, Float:fPos[3])
+{
+	for(new i = 0; i < 3; i++)
+		fPos[i] = (g_Zones[Zone][ZoneNumber][0][i] + g_Zones[Zone][ZoneNumber][7][i]) / 2;
+}
+
+GetMinMaxBounds(Zone, ZoneNumber, Float:fBounds[2][3])
+{
+	new Float:length;
+	
+	for(new i = 0; i < 3; i++)
+	{
+		length = FloatAbs(g_Zones[Zone][ZoneNumber][0][i] - g_Zones[Zone][ZoneNumber][7][i]);
+		fBounds[0][i] = -(length / 2);
+		fBounds[1][i] = length / 2;
+	}
+}
+
 DB_Connect()
 {
 	if(g_DB != INVALID_HANDLE)
 		CloseHandle(g_DB);
+	
 	decl String:error[255];
 	g_DB = SQL_Connect("timer", true, error, sizeof(error));
+	
 	if(g_DB == INVALID_HANDLE)
 	{
 		LogError(error);
@@ -1199,30 +1225,44 @@ DB_Connect()
 	}
 }
 
-/*
-* Deletes either a main or bonus zone
-*/
-DB_DeleteZone(Type)
+DB_LoadZones()
 {
-	decl String:query[512], String:mapname[64];
-	GetCurrentMap(mapname, sizeof(mapname));
-	Format(query, sizeof(query), "SELECT MapID FROM maps WHERE MapName='%s' LIMIT 0, 1", mapname);
-	SQL_TQuery(g_DB, DB_DeleteZone_Callback1, query, Type);
+	decl String:query[512];
+	FormatEx(query, sizeof(query), "SELECT Type, RowID, flags, point00, point01, point02, point10, point11, point12 FROM zones WHERE MapID = (SELECT MapID FROM maps WHERE MapName='%s' LIMIT 0, 1)",
+		g_sMapName);
+	SQL_TQuery(g_DB, LoadZones_Callback, query);
 }
 
-public DB_DeleteZone_Callback1(Handle:owner, Handle:hndl, const String:error[], any:data)
+public LoadZones_Callback(Handle:owner, Handle:hndl, String:error[], any:data)
 {
 	if(hndl != INVALID_HANDLE)
 	{
-		if(SQL_GetRowCount(hndl) != 0)
+		new Zone, ZoneNumber;
+		
+		while(SQL_FetchRow(hndl))
 		{
-			SQL_FetchRow(hndl);
-			new mapid = SQL_FetchInt(hndl, 0);
-			decl String:query[256];
-			Format(query, sizeof(query), "DELETE FROM zones WHERE MapID=%d AND Type=%d", mapid, data);
-			SQL_TQuery(g_DB, DB_DeleteZone_Callback2, query, data);
+			Zone       = SQL_FetchInt(hndl, 0);
+			ZoneNumber = g_Properties[Zone][Count];
+			
+			g_Properties[Zone][RowID][ZoneNumber] = SQL_FetchInt(hndl, 1);
+			g_Properties[Zone][Flags][ZoneNumber] = SQL_FetchInt(hndl, 2);
+			
+			for(new i = 0; i < 6; i++)
+			{
+				g_Zones[Zone][ZoneNumber][(i / 3) * 7][i % 3] = SQL_FetchFloat(hndl, i + 3);
+			}
+			
+			CreateZonePoints(g_Zones[Zone][ZoneNumber]);
+			CreateZoneTrigger(Zone, ZoneNumber);
+			
+			g_Properties[Zone][Ready][ZoneNumber] = true;
+			g_Properties[Zone][Count]++;
+			g_TotalZoneCount++;
 		}
 		
+		decl String:sQuery[128];
+		FormatEx(sQuery, sizeof(sQuery), "SELECT MapID, Type FROM zones");
+		SQL_TQuery(g_DB, LoadZones_Callback2, sQuery);
 	}
 	else
 	{
@@ -1230,244 +1270,24 @@ public DB_DeleteZone_Callback1(Handle:owner, Handle:hndl, const String:error[], 
 	}
 }
 
-public DB_DeleteZone_Callback2(Handle:owner, Handle:hndl, const String:error[], any:data)
+public LoadZones_Callback2(Handle:owner, Handle:hndl, String:error[], any:data)
 {
 	if(hndl != INVALID_HANDLE)
 	{
-		new const String:zoneNames[4][] = {"[Main start]", "[Main end]", "[Bonus start]", "[Bonus end]"};
-		LogMessage("Zone %s deleted", zoneNames[data]);
-	}
-	else
-	{
-		LogError(error);
-	}
-}
-
-/*
-* Deletes an anti-cheat zone
-*/
-DB_DeleteAntiCheatZone(Zone)
-{
-	decl String:query[512], String:mapname[64];
-	GetCurrentMap(mapname, sizeof(mapname));
-	Format(query, sizeof(query), "SELECT MapID FROM maps WHERE MapName='%s' LIMIT 0, 1", mapname);
-	SQL_TQuery(g_DB, DB_DeleteAntiCheatZone_Callback1, query, Zone);
-}
-
-public DB_DeleteAntiCheatZone_Callback1(Handle:owner, Handle:hndl, const String:error[], any:data)
-{
-	if(hndl != INVALID_HANDLE)
-	{
-		SQL_FetchRow(hndl);
-		new mapid = SQL_FetchInt(hndl, 0);
+		for(new Zone; Zone < ZONE_COUNT; Zone++)
+			g_TotalZoneAllMaps[Zone] = 0;
 		
-		decl String:query[256];
-		
-		Format(query, sizeof(query), "DELETE FROM zones WHERE MapID=%d AND Type=4 AND point00=%f AND point01=%f AND point02=%f AND point10=%f AND point11=%f AND point12=%f",
-			mapid,
-			g_anticheat[data][0][0], g_anticheat[data][0][1], g_anticheat[data][0][2],
-			g_anticheat[data][7][0], g_anticheat[data][7][1], g_anticheat[data][7][2]);
-		SQL_TQuery(g_DB, DB_DeleteAntiCheatZone_Callback2, query, data);
-	}
-	else
-	{
-		LogError(error);
-	}
-}
-
-public DB_DeleteAntiCheatZone_Callback2(Handle:owner, Handle:hndl, const String:error[], any:data)
-{
-	if(hndl != INVALID_HANDLE)
-	{
-		LogMessage("An Anti-cheat zone has been deleted");
-		
-		for(new z=data; z<g_anticheat_count-1; z++)
-			for(new slot=0; slot<8; slot++)
-				for(new slottwo=0; slottwo<3; slottwo++)
-					g_anticheat[z][slot][slottwo] = g_anticheat[z+1][slot][slottwo];
-				
-		g_anticheat_count--;
-	}
-	else
-	{
-		LogError(error);
-	}
-}
-
-DB_DeleteFreeStyleZone(Zone)
-{
-	decl String:query[512], String:mapname[64];
-	
-	GetCurrentMap(mapname, sizeof(mapname));
-	
-	Format(query, sizeof(query), "SELECT MapID FROM maps WHERE MapName='%s' LIMIT 0, 1", mapname);
-	SQL_TQuery(g_DB, DB_DeleteFreeStyleZone_Callback1, query, Zone);
-}
-
-public DB_DeleteFreeStyleZone_Callback1(Handle:owner, Handle:hndl, const String:error[], any:data)
-{
-	if(hndl != INVALID_HANDLE)
-	{
-		SQL_FetchRow(hndl);
-		new mapid = SQL_FetchInt(hndl, 0);
-		
-		decl String:query[256];
-		
-		Format(query, sizeof(query), "DELETE FROM zones WHERE MapID=%d AND Type=5 AND point00=%f AND point01=%f AND point02=%f AND point10=%f AND point11=%f AND point12=%f",
-			mapid,
-			g_freestyle[data][0][0], g_freestyle[data][0][1], g_freestyle[data][0][2],
-			g_freestyle[data][7][0], g_freestyle[data][7][1], g_freestyle[data][7][2]);
-		SQL_TQuery(g_DB, DB_DeleteFreeStyleZone_Callback2, query, data);
-	}
-	else
-	{
-		LogError(error);
-	}
-}
-
-public DB_DeleteFreeStyleZone_Callback2(Handle:owner, Handle:hndl, const String:error[], any:data)
-{
-	if(hndl != INVALID_HANDLE)
-	{
-		LogMessage("A Free Style zone has been deleted");
-		
-		for(new z=data; z<g_freestyle_count-1; z++)
-			for(new slot=0; slot<8; slot++)
-				for(new slottwo=0; slottwo<3; slottwo++)
-					g_freestyle[z][slot][slottwo] = g_freestyle[z+1][slot][slottwo];
-				
-		g_freestyle_count--;
-	}
-	else
-	{
-		LogError(error);
-	}
-}
-
-/*
-* Adds a main, bonus, or anti-cheat zone
-*/
-DB_AddZone(ZoneType, Float:point[8][3])
-{
-	new Handle:data = CreateDataPack();
-	WritePackCell(data, ZoneType);
-	
-	for(new i=0; i<8; i++)
-		for(new x=0; x<3; x++)
-			WritePackFloat(data, point[i][x]);
-		
-	decl String:query[512], String:mapname[64];
-	
-	GetCurrentMap(mapname, sizeof(mapname));
-	
-	Format(query, sizeof(query), "SELECT MapID FROM maps WHERE MapName='%s' LIMIT 0, 1", mapname);
-	SQL_TQuery(g_DB, DB_AddZone_Callback1, query, data);
-}
-
-public DB_AddZone_Callback1(Handle:owner, Handle:hndl, const String:error[], any:data)
-{
-	if(hndl != INVALID_HANDLE)
-	{
-		ResetPack(data);
-		new ZoneType = ReadPackCell(data);
-		
-		new Float:point[8][3];
-		for(new i=0; i<8; i++)
-			for(new x=0; x<3; x++)
-				point[i][x] = ReadPackFloat(data);
-			
-		SQL_FetchRow(hndl);
-		new mapid = SQL_FetchInt(hndl, 0);
-		
-		decl String:query[256];
-		
-		Format(query, sizeof(query), "INSERT INTO zones (MapID, Type, point00, point01, point02, point10, point11, point12) VALUES (%d, %d, %f, %f, %f, %f, %f, %f)", 
-			mapid, 
-			ZoneType,
-			point[0][0], point[0][1], point[0][2], 
-			point[7][0], point[7][1], point[7][2]);
-		SQL_TQuery(g_DB, DB_AddZone_Callback2, query, ZoneType);
-	}
-	else
-	{
-		LogError(error);
-	}
-}
-
-public DB_AddZone_Callback2(Handle:owner, Handle:hndl, const String:error[], any:data)
-{
-	if(hndl != INVALID_HANDLE)
-	{
-		new const String:zoneNames[6][] = {"[Main start]", "[Main end]", "[Bonus start]", "[Bonus end]", "[Anti-cheat]", "[Free Style]"};
-		LogMessage("Zone %s has been created.", zoneNames[data]);
-	}
-	else
-	{
-		LogError(error);
-	}
-}
-
-/*
-* Loads all the zones for a map when it starts
-*/
-DB_LoadZones()
-{	
-	// Select zones query
-	decl String:query[512];
-	Format(query, sizeof(query), "SELECT point00, point01, point02, point10, point11, point12, Type FROM zones WHERE MapID=(SELECT MapID FROM maps WHERE MapName='%s' LIMIT 0, 1)", 
-		g_sMapName);
-	SQL_TQuery(g_DB, DB_LoadZones_Callback, query);
-}
-
-public DB_LoadZones_Callback(Handle:owner, Handle:hndl, const String:error[], any:data)
-{
-	if(hndl != INVALID_HANDLE)
-	{
-		new rows = SQL_GetRowCount(hndl), Type;
-		
-		for(new i=0; i<rows; i++)
+		new MapID;
+		decl String:sMapName[64];
+		while(SQL_FetchRow(hndl))
 		{
-			SQL_FetchRow(hndl);
+			MapID = SQL_FetchInt(hndl, 0);
 			
-			Type = SQL_FetchInt(hndl, 6);
+			GetMapNameFromMapId(MapID, sMapName, sizeof(sMapName));
 			
-			if(0 <= Type <= 1) // main start/end zones
+			if(FindStringInArray(g_MapList, sMapName) != -1)
 			{
-				for(new z=0; z<6; z++)
-				{
-					g_main[Type][(z/3)*7][z%3] = SQL_FetchFloat(hndl, z);
-				}
-				
-				CreateZonePoints(g_main[Type]);
-				EnableZone(g_main_ready[Type], true);
-			}
-			else if(2 <= Type <= 3) // bonus start/end zones
-			{
-				for(new z=0; z<6; z++)
-				{
-					g_bonus[Type%2][(z/3)*7][z%3] = SQL_FetchFloat(hndl, z);
-				}
-				
-				CreateZonePoints(g_bonus[Type%2]);
-				EnableZone(g_bonus_ready[Type%2], true);
-			}
-			else if(Type == 4) // anti-cheat zone
-			{
-				for(new z=0; z<6; z++)
-				{
-					g_anticheat[g_anticheat_count][(z/3)*7][z%3] = SQL_FetchFloat(hndl, z);
-				}
-				
-				CreateZonePoints(g_anticheat[g_anticheat_count++]);
-			}
-			else if(Type == 5) // free style zone
-			{
-				for(new z=0; z<6; z++)
-				{
-					g_freestyle[g_freestyle_count][(z/3)*7][z%3] = SQL_FetchFloat(hndl, z);
-				}
-				
-				CreateZonePoints(g_freestyle[g_freestyle_count++]);
+				g_TotalZoneAllMaps[SQL_FetchInt(hndl, 1)]++;
 			}
 		}
 		
@@ -1480,66 +1300,710 @@ public DB_LoadZones_Callback(Handle:owner, Handle:hndl, const String:error[], an
 	}
 }
 
-public Action:OnPlayerRunCmd(client, &buttons, &impulse, Float:vel[3], Float:angles[3], &weapon)
+DB_SaveZone(Zone, ZoneNumber)
 {
-	if(!IsFakeClient(client))
+	new Handle:data = CreateDataPack();
+	WritePackCell(data, Zone);
+	WritePackCell(data, ZoneNumber);
+	
+	decl String:query[512];
+	FormatEx(query, sizeof(query), "INSERT INTO zones (MapID, Type, point00, point01, point02, point10, point11, point12, flags) VALUES ((SELECT MapID FROM maps WHERE MapName='%s' LIMIT 0, 1), %d, %f, %f, %f, %f, %f, %f, %d)", 
+		g_sMapName,
+		Zone,
+		g_Zones[Zone][ZoneNumber][0][0], g_Zones[Zone][ZoneNumber][0][1], g_Zones[Zone][ZoneNumber][0][2], 
+		g_Zones[Zone][ZoneNumber][7][0], g_Zones[Zone][ZoneNumber][7][1], g_Zones[Zone][ZoneNumber][7][2],
+		g_Properties[Zone][Flags][ZoneNumber]);
+	SQL_TQuery(g_DB, SaveZone_Callback, query, data);
+}
+
+public SaveZone_Callback(Handle:owner, Handle:hndl, String:error[], any:data)
+{
+	if(hndl != INVALID_HANDLE)
 	{
-		if(IsPlayerAlive(client))
+		ResetPack(data);
+		new Zone       = ReadPackCell(data);
+		new ZoneNumber = ReadPackCell(data);
+		
+		g_Properties[Zone][RowID][ZoneNumber] = SQL_GetInsertId(hndl);
+	}
+	else
+	{
+		LogError(error);
+	}
+	
+	CloseHandle(data);
+}
+
+DB_DeleteZone(client, Zone, ZoneNumber, bool:ManualDelete = false)
+{
+	if(g_Properties[Zone][Ready][ZoneNumber] == true)
+	{		
+		// Delete from database
+		new Handle:data = CreateDataPack();
+		WritePackCell(data, GetClientUserId(client));
+		WritePackCell(data, Zone);
+		
+		decl String:query[512];
+		FormatEx(query, sizeof(query), "DELETE FROM zones WHERE RowID = %d",
+			g_Properties[Zone][RowID][ZoneNumber]);
+		SQL_TQuery(g_DB, DeleteZone_Callback, query, data);
+		
+		
+		// Delete in memory
+		for(new client2 = 1; client2 <= MaxClients; client2++)
 		{
-			if(g_main_ready[0] && g_main_ready[1])
-			{
-				g_main_info[client][0] = IsInsideZone(client, g_main[0]);
-				g_main_info[client][1] = IsInsideZone(client, g_main[1]);
-				if(g_main_info[client][0]) // Is in starting zone
-				{
-					if(GetClientVelocity(client, true, true, true) > g_prespeed)
-					{
-						if(GetEntityMoveType(client) != MOVETYPE_NOCLIP)
-							TeleportEntity(client, NULL_VECTOR, NULL_VECTOR, Float:{0, 0, 0});
-					}
-					
-					if(GetEntityFlags(client) & FL_ONGROUND)
-						StartTimer(client, TIMER_MAIN);
-				}
-				else if(g_main_info[client][1]) // Is in end zone
-				{
-					if(IsBeingTimed(client, TIMER_MAIN))
-						FinishTimer(client);
-				}
-			}
-			if(g_bonus_ready[0] && g_bonus_ready[1])
-			{
-				g_bonus_info[client][0] = IsInsideZone(client, g_bonus[0]);
-				g_bonus_info[client][1] = IsInsideZone(client, g_bonus[1]);
-				if(g_bonus_info[client][0]) // Is in starting zone
-				{
-					if(GetClientVelocity(client, true, true, true) > g_prespeed)
-					{
-						if(GetEntityMoveType(client) != MOVETYPE_NOCLIP)
-							TeleportEntity(client, NULL_VECTOR, NULL_VECTOR, Float:{0, 0, 0});
-					}
-					
-					if(GetEntityFlags(client) & FL_ONGROUND)
-						StartTimer(client, TIMER_BONUS);
-				}
-				else if(g_bonus_info[client][1]) // Is in end zone
-				{
-					if(IsBeingTimed(client, TIMER_BONUS))
-						FinishTimer(client);
-				}
-			}
+			g_bInside[client2][Zone][ZoneNumber] = false;
 			
-			for(new i=0; i<g_anticheat_count; i++)
-				if(IsInsideZone(client, g_anticheat[i]))
+			if(ManualDelete == true)
+			{
+				if(Zone == MAIN_START || Zone == MAIN_END)
 				{
-					if(IsBeingTimed(client, TIMER_ANY))
+					if(IsBeingTimed(client2, TIMER_MAIN))
 					{
-						StopTimer(client);
-						PrintColorText(client, "%s%sYour timer has been stopped for using a shortcut.",
+						StopTimer(client2);
+						
+						PrintColorText(client2, "%s%sYour timer was stopped because the %s%s%s zone was deleted.",
 							g_msg_start,
+							g_msg_textcol,
+							g_msg_varcol,
+							g_Properties[Zone][Name],
 							g_msg_textcol);
 					}
 				}
+				
+				if(Zone == BONUS_START || Zone == BONUS_END)
+				{
+					if(IsBeingTimed(client2, TIMER_BONUS))
+					{
+						StopTimer(client2);
+						
+						PrintColorText(client2, "%s%sYour timer was stopped because the %s%s%s zone was deleted.",
+							g_msg_start,
+							g_msg_textcol,
+							g_msg_varcol,
+							g_Properties[Zone][Name],
+							g_msg_textcol);
+					}
+				}
+			}
+		}
+		
+		if(IsValidEntity(g_Properties[Zone][Entity][ZoneNumber]))
+		{
+			AcceptEntityInput(g_Properties[Zone][Entity][ZoneNumber], "Kill");
+		}
+		
+		if(-1 < g_Properties[Zone][Entity][ZoneNumber] < 2048)
+		{
+			g_Entities_ZoneNumber[g_Properties[Zone][Entity][ZoneNumber]] = -1;
+			g_Entities_ZoneType[g_Properties[Zone][Entity][ZoneNumber]]   = -1;
+		}
+		
+		for(new i = ZoneNumber; i < g_Properties[Zone][Count] - 1; i++)
+		{
+			for(new point = 0; point < 8; point++)
+				for(new axis = 0; axis < 3; axis++)
+					g_Zones[Zone][i][point][axis] = g_Zones[Zone][i + 1][point][axis];
+			
+			g_Properties[Zone][Entity][i] = g_Properties[Zone][Entity][i + 1];
+			
+			if(-1 < g_Properties[Zone][Entity][i] < 2048)
+			{
+				g_Entities_ZoneNumber[g_Properties[Zone][Entity][i]]--;
+			}
+			
+			g_Properties[Zone][RowID][i]  = g_Properties[Zone][RowID][i + 1];
+			g_Properties[Zone][Flags][i]  = g_Properties[Zone][Flags][i + 1];
+			
+		}
+		
+		g_Properties[Zone][Ready][g_Properties[Zone][Count] - 1] = false;
+		
+		g_Properties[Zone][Count]--;
+		g_TotalZoneCount--;
+	}
+	else
+	{
+		PrintColorText(client, "%s%sAttempted to delete a zone that doesn't exist.",
+			g_msg_start,
+			g_msg_textcol);
+	}
+}
+
+public DeleteZone_Callback(Handle:owner, Handle:hndl, const String:error[], any:data)
+{
+	if(hndl != INVALID_HANDLE)
+	{
+		ResetPack(data);
+		new userid = ReadPackCell(data);
+		new client = GetClientOfUserId(userid);
+		
+		if(client != 0)
+		{
+			new Zone = ReadPackCell(data);
+			LogMessage("%L deleted zone %s", client, g_Properties[Zone][Name]);
+		}
+		else
+		{
+			LogMessage("Player with UserID %d deleted a zone.", userid);
+		}
+	}
+	else
+	{
+		LogError(error);
+	}
+	
+	CloseHandle(data);
+}
+
+OpenGoToMenu(client)
+{
+	if(g_TotalZoneCount > 0)
+	{
+		new Handle:menu = CreateMenu(Menu_GoToZone);
+		
+		SetMenuTitle(menu, "Go to a Zone");
+		
+		decl String:sInfo[8];
+		for(new Zone; Zone < ZONE_COUNT; Zone++)
+		{
+			if(g_Properties[Zone][Count] > 0)
+			{
+				IntToString(Zone, sInfo, sizeof(sInfo));
+				AddMenuItem(menu, sInfo, g_Properties[Zone][Name]);
+			}
+		}
+		
+		SetMenuExitBackButton(menu, true);
+		DisplayMenu(menu, client, MENU_TIME_FOREVER);
+	}
+	else
+	{
+		OpenZonesMenu(client);
+	}
+}
+
+public Menu_GoToZone(Handle:menu, MenuAction:action, client, param2)
+{
+	if(action == MenuAction_Select)
+	{
+		decl String:info[32];
+		GetMenuItem(menu, param2, info, sizeof(info));
+		
+		new Zone = StringToInt(info);
+		
+		switch(Zone)
+		{
+			case MAIN_START, MAIN_END, BONUS_START, BONUS_END:
+			{
+				TeleportToZone(client, Zone, 0);
+				OpenGoToMenu(client);
+			}
+			case ANTICHEAT, FREESTYLE:
+			{
+				ListGoToZones(client, Zone);
+			}
+		}
+	}
+	else if(action == MenuAction_Cancel)
+	{
+		if(param2 == MenuCancel_ExitBack)
+			OpenZonesMenu(client);
+	}
+	else if(action == MenuAction_End)
+	{
+		CloseHandle(menu);
+	}
+	
+	if(action & MenuAction_Cancel)
+	{
+		if(param2 == MenuCancel_Exit)
+		{
+			g_Setup[client][InZonesMenu] = false;
+		}
+	}
+}
+
+ListGoToZones(client, Zone)
+{
+	new Handle:menu = CreateMenu(Menu_GoToList);
+	SetMenuTitle(menu, "Go to %s zones", g_Properties[Zone][Name]);
+	
+	decl String:sInfo[16], String:sDisplay[16];
+	for(new ZoneNumber; ZoneNumber < g_Properties[Zone][Count]; ZoneNumber++)
+	{
+		FormatEx(sInfo, sizeof(sInfo), "%d;%d", Zone, ZoneNumber);
+		IntToString(ZoneNumber + 1, sDisplay, sizeof(sDisplay));
+		
+		AddMenuItem(menu, sInfo, sDisplay);
+	}
+	
+	SetMenuExitBackButton(menu, true);
+	DisplayMenu(menu, client, MENU_TIME_FOREVER);
+}
+
+public Menu_GoToList(Handle:menu, MenuAction:action, client, param2)
+{
+	if(action == MenuAction_Select)
+	{
+		decl String:info[32];
+		GetMenuItem(menu, param2, info, sizeof(info));
+		
+		decl String:sZoneAndNumber[2][16];
+		ExplodeString(info, ";", sZoneAndNumber, 2, 16);
+		
+		new Zone       = StringToInt(sZoneAndNumber[0]);
+		new ZoneNumber = StringToInt(sZoneAndNumber[1]);
+		
+		TeleportToZone(client, Zone, ZoneNumber);
+		
+		ListGoToZones(client, Zone);
+	}
+	else if(action == MenuAction_Cancel)
+	{
+		if(param2 == MenuCancel_ExitBack)
+			OpenGoToMenu(client);
+	}
+	else if(action == MenuAction_End)
+	{
+		CloseHandle(menu);
+	}
+	
+	if(action & MenuAction_Cancel)
+	{
+		if(param2 == MenuCancel_Exit)
+		{
+			g_Setup[client][InZonesMenu] = false;
+		}
+	}
+}
+
+OpenDeleteMenu(client)
+{
+	if(g_TotalZoneCount > 0)
+	{
+		new Handle:menu = CreateMenu(Menu_DeleteZone);
+		
+		SetMenuTitle(menu, "Delete a Zone");
+		
+		AddMenuItem(menu, "sel", "Selected Zone");
+		
+		decl String:sInfo[8];
+		for(new Zone = 0; Zone < ZONE_COUNT; Zone++)
+		{
+			if(g_Properties[Zone][Count] > 0)
+			{
+				IntToString(Zone, sInfo, sizeof(sInfo));
+				
+				AddMenuItem(menu, sInfo, g_Properties[Zone][Name]);
+			}
+		}
+		
+		SetMenuExitBackButton(menu, true);
+		DisplayMenu(menu, client, MENU_TIME_FOREVER);
+	}
+	else
+	{
+		OpenZonesMenu(client);
+	}
+}
+
+public Menu_DeleteZone(Handle:menu, MenuAction:action, client, param2)
+{
+	if(action == MenuAction_Select)
+	{
+		decl String:info[32];
+		GetMenuItem(menu, param2, info, sizeof(info));
+		
+		if(StrEqual(info, "sel"))
+		{
+			for(new Zone = 0; Zone < ZONE_COUNT; Zone++)
+			{
+				for(new ZoneNumber = 0; ZoneNumber < g_Properties[Zone][Count]; ZoneNumber++)
+				{
+					if(g_bInside[client][Zone][ZoneNumber] == true)
+					{
+						DB_DeleteZone(client, Zone, ZoneNumber, true);
+					}
+				}
+			}
+			
+			OpenDeleteMenu(client);
+		}
+		else
+		{
+			new Zone = StringToInt(info);
+			
+			switch(Zone)
+			{
+				case MAIN_START, MAIN_END, BONUS_START, BONUS_END:
+				{
+					DB_DeleteZone(client, Zone, 0, true);
+					
+					OpenDeleteMenu(client);
+				}
+				case ANTICHEAT, FREESTYLE:
+				{
+					ListDeleteZones(client, Zone);
+				}
+			}
+		}
+	}
+	else if (action == MenuAction_Cancel)
+	{
+		if(param2 == MenuCancel_ExitBack)
+			OpenZonesMenu(client);
+	}
+	else if (action == MenuAction_End)
+	{
+		CloseHandle(menu);
+	}
+	
+	if(action & MenuAction_Cancel)
+	{
+		if(param2 == MenuCancel_Exit)
+		{
+			g_Setup[client][InZonesMenu] = false;
+		}
+	}
+}
+
+ListDeleteZones(client, Zone)
+{
+	new Handle:menu = CreateMenu(Menu_DeleteList);
+	SetMenuTitle(menu, "Delete %s zones", g_Properties[Zone][Name]);
+	
+	decl String:sInfo[16], String:sDisplay[16];
+	for(new ZoneNumber = 0; ZoneNumber < g_Properties[Zone][Count]; ZoneNumber++)
+	{
+		FormatEx(sInfo, sizeof(sInfo), "%d;%d", Zone, ZoneNumber);
+		IntToString(ZoneNumber + 1, sDisplay, sizeof(sDisplay));
+		
+		AddMenuItem(menu, sInfo, sDisplay);
+	}
+	
+	SetMenuExitBackButton(menu, true);
+	DisplayMenu(menu, client, MENU_TIME_FOREVER);
+}
+
+public Menu_DeleteList(Handle:menu, MenuAction:action, client, param2)
+{
+	if(action == MenuAction_Select)
+	{
+		decl String:info[32];
+		GetMenuItem(menu, param2, info, sizeof(info));
+		
+		decl String:sZoneAndNumber[2][16];
+		ExplodeString(info, ";", sZoneAndNumber, 2, 16);
+		
+		new Zone       = StringToInt(sZoneAndNumber[0]);
+		new ZoneNumber = StringToInt(sZoneAndNumber[1]);
+		
+		DB_DeleteZone(client, Zone, ZoneNumber);
+		
+		ListDeleteZones(client, Zone);
+	}
+	else if(action == MenuAction_Cancel)
+	{
+		if(param2 == MenuCancel_ExitBack)
+			OpenGoToMenu(client);
+	}
+	else if(action == MenuAction_End)
+	{
+		CloseHandle(menu);
+	}
+	
+	if(action & MenuAction_Cancel)
+	{
+		if(param2 == MenuCancel_Exit)
+		{
+			g_Setup[client][InZonesMenu] = false;
+		}
+	}
+}
+
+OpenSetFlagsMenu(client, Zone = -1, ZoneNumber = -1)
+{
+	g_Setup[client][InSetFlagsMenu] = true;
+	g_Setup[client][ViewAnticheats] = true;
+	
+	new Handle:menu = CreateMenu(Menu_SetFlags);
+	SetMenuExitBackButton(menu, true);
+	
+	if(Zone == -1 && ZoneNumber == -1)
+	{
+		for(Zone = ANTICHEAT; Zone <= FREESTYLE; Zone++)
+		{
+			if((ZoneNumber = Timer_InsideZone(client, Zone)) != -1)
+			{
+				break;
+			}
+		}
+	}
+	
+	if(ZoneNumber != -1)
+	{
+		SetMenuTitle(menu, "Set %s flags", g_Properties[Zone][Name]);
+				
+		decl String:sInfo[16];
+		
+		switch(Zone)
+		{
+			case ANTICHEAT:
+			{
+				FormatEx(sInfo, sizeof(sInfo), "%d;%d;%d", ANTICHEAT, ZoneNumber, FLAG_ANTICHEAT_MAIN);
+				AddMenuItem(menu, sInfo, (g_Properties[Zone][Flags][ZoneNumber] & FLAG_ANTICHEAT_MAIN)?"Main: Yes":"Main: No");
+				
+				FormatEx(sInfo, sizeof(sInfo), "%d;%d;%d", ANTICHEAT, ZoneNumber, FLAG_ANTICHEAT_BONUS);
+				AddMenuItem(menu, sInfo, (g_Properties[Zone][Flags][ZoneNumber] & FLAG_ANTICHEAT_BONUS)?"Bonus: Yes":"Bonus: No");
+				
+				DisplayMenu(menu, client, MENU_TIME_FOREVER);
+				
+				return;
+			}
+			case FREESTYLE:
+			{
+				decl String:sStyle[32], String:sDisplay[128];
+				for(new Style; Style < MAX_STYLES; Style++)
+				{
+					if(Style_IsEnabled(Style) && Style_IsFreestyleAllowed(Style))
+					{
+						GetStyleName(Style, sStyle, sizeof(sStyle));
+						
+						FormatEx(sDisplay, sizeof(sDisplay), (g_Properties[Zone][Flags][ZoneNumber] & (1 << Style))?"%s: Yes":"%s: No", sStyle);
+						
+						FormatEx(sInfo, sizeof(sInfo), "%d;%d;%d", FREESTYLE, ZoneNumber, 1 << Style);
+						
+						AddMenuItem(menu, sInfo, sDisplay);
+					}
+				}
+				
+				DisplayMenu(menu, client, MENU_TIME_FOREVER);
+				
+				return;
+			}
+		}
+	}
+	else
+	{
+		SetMenuTitle(menu, "Not in Anti-cheat nor Freestyle zone");
+		AddMenuItem(menu, "choose", "Go to a zone", ITEMDRAW_DISABLED);
+		DisplayMenu(menu, client, MENU_TIME_FOREVER);
+	}
+}
+
+public Menu_SetFlags(Handle:menu, MenuAction:action, client, param2)
+{
+	if(action == MenuAction_Select)
+	{
+		decl String:info[32];
+		GetMenuItem(menu, param2, info, sizeof(info));
+		
+		if(StrEqual(info, "choose"))
+		{
+			OpenSetFlagsMenu(client);
+		}
+		else
+		{
+			decl String:sExplode[3][16];
+			ExplodeString(info, ";", sExplode, 3, 16);
+			
+			new Zone       = StringToInt(sExplode[0]);
+			new ZoneNumber = StringToInt(sExplode[1]);
+			new flags      = StringToInt(sExplode[2]);
+			
+			SetZoneFlags(Zone, ZoneNumber, g_Properties[Zone][Flags][ZoneNumber] ^ flags);
+			
+			OpenSetFlagsMenu(client, Zone, ZoneNumber);
+		}
+	}
+	else if(action == MenuAction_Cancel)
+	{
+		if(param2 == MenuCancel_ExitBack)
+			OpenGoToMenu(client);
+	}
+	else if(action == MenuAction_End)
+	{
+		CloseHandle(menu);
+	}
+	
+	if(action & MenuAction_Cancel)
+	{		
+		if(param2 == MenuCancel_Exit)
+		{
+			g_Setup[client][InZonesMenu]    = false;
+			g_Setup[client][InSetFlagsMenu] = false;
+		}
+		else if(param2 == MenuCancel_ExitBack)
+		{
+			g_Setup[client][InSetFlagsMenu] = false;
+			
+			OpenZonesMenu(client);
+		}
+	}
+}
+
+SetZoneFlags(Zone, ZoneNumber, flags)
+{
+	g_Properties[Zone][Flags][ZoneNumber] = flags;
+	
+	decl String:query[128];
+	FormatEx(query, sizeof(query), "UPDATE zones SET flags = %d WHERE RowID = %d",
+		g_Properties[Zone][Flags][ZoneNumber],
+		g_Properties[Zone][RowID][ZoneNumber]);
+	SQL_TQuery(g_DB, SetZoneFlags_Callback, query);
+}
+
+public SetZoneFlags_Callback(Handle:owner, Handle:hndl, String:error[], any:data)
+{
+	if(hndl == INVALID_HANDLE)
+	{
+		LogError(error);
+	}
+}
+
+bool:IsClientInsideZone(client, Float:point[8][3])
+{
+	new Float:fPos[3];
+	Entity_GetAbsOrigin(client, fPos);
+	
+	// Add 5 units to a player's height or it won't work
+	fPos[2] += 5.0;
+	
+	return IsPointInsideZone(fPos, point);
+}
+
+bool:IsPointInsideZone(Float:pos[3], Float:point[8][3])
+{
+	for(new i = 0; i < 3; i++)
+	{
+		if(point[0][i] >= pos[i] == point[7][i] >= pos[i])
+		{
+			return false;
+		}
+	}
+	
+	return true;
+}
+
+public Native_InsideZone(Handle:plugin, numParams)
+{
+	new client = GetNativeCell(1);
+	new Zone   = GetNativeCell(2);
+	new flags  = GetNativeCell(3);
+	
+	for(new ZoneNumber; ZoneNumber < g_Properties[Zone][Count]; ZoneNumber++)
+	{
+		if(g_bInside[client][Zone][ZoneNumber] == true)
+		{
+			if(flags != -1)
+			{
+				if(g_Properties[Zone][Flags][ZoneNumber] & flags)
+					return ZoneNumber;
+			}
+			else
+			{
+				return ZoneNumber;
+			}
+		}
+	}
+		
+	return -1;
+}
+
+public Native_IsPointInsideZone(Handle:plugin, numParams)
+{
+	new Float:fPos[3];
+	GetNativeArray(1, fPos, 3);
+	
+	new Zone       = GetNativeCell(2);
+	new ZoneNumber = GetNativeCell(3);
+	
+	if(g_Properties[Zone][Ready][ZoneNumber] == true)
+	{
+		return IsPointInsideZone(fPos, g_Zones[Zone][ZoneNumber]);
+	}
+	else
+	{
+		return false;
+	}
+}
+
+public Native_TeleportToZone(Handle:plugin, numParams)
+{
+	new client      = GetNativeCell(1);
+	new Zone        = GetNativeCell(2);
+	new ZoneNumber  = GetNativeCell(3);
+	new bool:bottom = GetNativeCell(4);
+	
+	TeleportToZone(client, Zone, ZoneNumber, bottom);
+}
+
+public Native_GetTotalZonesAllMaps(Handle:plugin, numParams)
+{
+	return g_TotalZoneAllMaps[GetNativeCell(1)];
+}
+
+public Action:OnPlayerRunCmd(client, &buttons, &impulse, Float:vel[3], Float:angles[3], &weapon)
+{	
+	if(IsPlayerAlive(client) && !IsFakeClient(client))
+	{
+		for(new Zone = 0; Zone < ZONE_COUNT; Zone++)
+		{
+			if(g_Properties[Zone][TriggerBased] == false)
+			{
+				for(new ZoneNumber = 0; ZoneNumber < g_Properties[Zone][Count]; ZoneNumber++)
+				{
+					g_bInside[client][Zone][ZoneNumber] = IsClientInsideZone(client, g_Zones[Zone][ZoneNumber]);
+					
+					if(g_bInside[client][Zone][ZoneNumber] == true)
+					{
+						switch(Zone)
+						{
+							case MAIN_START:
+							{
+								if(g_Properties[MAIN_END][Ready][0] == true)
+									StartTimer(client, TIMER_MAIN);
+							}
+							case MAIN_END:
+							{
+								if(IsBeingTimed(client, TIMER_MAIN))
+									FinishTimer(client);
+							}
+							case BONUS_START:
+							{
+								if(g_Properties[BONUS_END][Ready][0] == true)
+									StartTimer(client, TIMER_BONUS);
+							}
+							case BONUS_END:
+							{
+								if(IsBeingTimed(client, TIMER_BONUS))
+									FinishTimer(client);
+							}
+							case ANTICHEAT:
+							{
+								if(IsBeingTimed(client, TIMER_MAIN) && g_Properties[Zone][Flags][ZoneNumber] & FLAG_ANTICHEAT_MAIN)
+								{
+									StopTimer(client);
+									
+									PrintColorText(client, "%s%sYour timer was stopped for using a shortcut.",
+										g_msg_start,
+										g_msg_textcol);
+								}
+								
+								if(IsBeingTimed(client, TIMER_BONUS) && g_Properties[Zone][Flags][ZoneNumber] & FLAG_ANTICHEAT_BONUS)
+								{
+									StopTimer(client);
+									
+									PrintColorText(client, "%s%sYour timer was stopped for using a shortcut.",
+										g_msg_start,
+										g_msg_textcol);
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 	}
 }

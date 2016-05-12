@@ -1,10 +1,11 @@
+#pragma dynamic 131072
 #pragma semicolon 1
 
 #include <bTimes-core>
 
 public Plugin:myinfo = 
 {
-	name = "[bTimes] ranks",
+	name = "[bTimes] Ranks",
 	author = "blacky",
 	description = "Controls server rankings",
 	version = VERSION,
@@ -12,18 +13,43 @@ public Plugin:myinfo =
 }
 
 #include <sourcemod>
+#include <sdkhooks>
 #include <bTimes-ranks>
+#include <bTimes-timer>
 #include <bTimes-random>
+#include <bTimes-zones>
+
+#undef REQUIRE_PLUGIN
 #include <scp>
 
 #define CC_HASCC 1<<0
 #define CC_MSGCOL 1<<1
 #define CC_NAME 1<<2
 
+enum
+{
+	GameType_CSS,
+	GameType_CSGO
+};
+
+new g_GameType;
+
 new 	Handle:g_DB;
 new	Handle:g_MapList;
 
-new 	g_rank[MAXPLAYERS+1];
+new 	Handle:g_hMapsDone[MAX_TYPES][MAX_STYLES],
+	Handle:g_hMapsDoneHndlRef[MAX_TYPES][MAX_STYLES],
+	Handle:g_hRecordListID[MAX_TYPES][MAX_STYLES],
+	Handle:g_hRecordListCount[MAX_TYPES][MAX_STYLES],
+	g_RecordCount[MAXPLAYERS + 1],
+	g_iMVPs_offset,
+	bool:g_bStatsLoaded;
+
+new	Handle:g_hRanksPlayerID[MAX_TYPES][MAX_STYLES],
+	Handle:g_hRanksPoints[MAX_TYPES][MAX_STYLES],
+	Handle:g_hRanksNames[MAX_TYPES][MAX_STYLES],
+	g_Rank[MAXPLAYERS + 1][MAX_TYPES][MAX_STYLES],
+	g_Points[MAXPLAYERS + 1][MAX_TYPES][MAX_STYLES];
 
 new	String:g_msg_start[128],
 	String:g_msg_varcol[128],
@@ -38,14 +64,14 @@ new	Handle:g_hCustomSteams,
 	Handle:g_hCustomNames,
 	Handle:g_hCustomMessages,
 	Handle:g_hCustomUse,
-	bool:g_bClientHasCustom[MAXPLAYERS+1],
-	g_ClientUseCustom[MAXPLAYERS+1];
+	g_ClientUseCustom[MAXPLAYERS + 1];
 	
 new	bool:g_bNewMessage;
 	
 // Settings
 new	Handle:g_hUseCustomChat,
-	Handle:g_hUseChatRanks;
+	Handle:g_hUseChatRanks,
+	Handle:g_hAllChat;
 	
 // Points recalculation
 new	g_RecalcTotal,
@@ -53,51 +79,27 @@ new	g_RecalcTotal,
 
 public OnPluginStart()
 {
+	decl String:sGame[64];
+	GetGameFolderName(sGame, sizeof(sGame));
+	
+	if(StrEqual(sGame, "cstrike"))
+		g_GameType = GameType_CSS;
+	else if(StrEqual(sGame, "csgo"))
+		g_GameType = GameType_CSGO;
+	else
+		SetFailState("This timer does not support this game (%s)", sGame);
+	
 	// Connect to the database
 	DB_Connect();
 	
 	// Cvars
 	g_hUseCustomChat  = CreateConVar("timer_enablecc", "1", "Allows specific players in sourcemod/configs/timer/custom.cfg to use custom chat.", 0, true, 0.0, true, 1.0);
 	g_hUseChatRanks   = CreateConVar("timer_chatranks", "1", "Allows players to use chat ranks specified in sourcemod/configs/timer/ranks.cfg", 0, true, 0.0, true, 1.0);
+	g_hAllChat        = CreateConVar("timer_allchat", "1", "Enable's allchat", 0, true, 0.0, true, 1.0);
 	
 	AutoExecConfig(true, "ranks", "timer");
 	
 	// Commands
-	RegConsoleCmdEx("sm_rank", SM_Rank, "Shows the overall rank of you or a specified player.");
-	RegConsoleCmdEx("sm_rankn", SM_RankN, "Shows the overall normal rank of you or a specified player.");
-	RegConsoleCmdEx("sm_ranksw", SM_RankSW, "Shows the overall sideways rank of you or a specified player.");
-	RegConsoleCmdEx("sm_rankw", SM_RankW, "Shows the overall w-only rank of you or a specified player.");
-	RegConsoleCmdEx("sm_rankstam", SM_RankStam, "Shows the overall stamina rank of you or a specified player.");
-	RegConsoleCmdEx("sm_rankhsw", SM_RankHSW, "Shows the overall half-sideways rank of you or a specified player.");
-	RegConsoleCmdEx("sm_brank", SM_BRank, "Shows the overall bonus rank of you or a specified player.");
-	
-	RegConsoleCmdEx("sm_top", SM_Top, "Shows the overall ranks.");
-	RegConsoleCmdEx("sm_topn", SM_TopN, "Shows the normal overall ranks.");
-	RegConsoleCmdEx("sm_topsw", SM_TopSW, "Shows the sideways overall ranks.");
-	RegConsoleCmdEx("sm_topw", SM_TopW, "Shows the w-only overall ranks.");
-	RegConsoleCmdEx("sm_topstam", SM_TopStam, "Shows the stamina overall ranks.");
-	RegConsoleCmdEx("sm_tophsw", SM_TopHSW, "Shows the half-sideways overall ranks.");
-	RegConsoleCmdEx("sm_btop", SM_BTop, "Shows the bonus ranks");
-	
-	RegConsoleCmdEx("sm_mapsleft", SM_Mapsleft, "Shows your or a specified player's maps left to beat.");
-	RegConsoleCmdEx("sm_mapsleftn", SM_MapsleftN, "Shows your or a specified player's maps left to beat on normal.");
-	RegConsoleCmdEx("sm_mapsleftsw", SM_MapsleftSW, "Shows your or a specified player's maps left to beat on sideways.");
-	RegConsoleCmdEx("sm_mapsleftw", SM_MapsleftW, "Shows your or a specified player's maps left to beat on w-only.");
-	RegConsoleCmdEx("sm_mapsleftstam", SM_MapsleftStam, "Shows your or a specified player's maps left to beat on stamina.");
-	RegConsoleCmdEx("sm_mapslefthsw", SM_MapsleftHSW, "Shows your or a specified player's maps left to beat on half-sideways.");
-	RegConsoleCmdEx("sm_bmapsleft", SM_BMapsleft, "Shows your or a specified player's bonus maps left to beat.");
-	
-	RegConsoleCmdEx("sm_mapsdone", SM_Mapsdone, "Shows your or a specified player's maps done.");
-	RegConsoleCmdEx("sm_mapsdonen", SM_MapsdoneN, "Shows your or a specified player's maps done on normal.");
-	RegConsoleCmdEx("sm_mapsdonesw", SM_MapsdoneSW, "Shows your or a specified player's maps done on sideways.");
-	RegConsoleCmdEx("sm_mapsdonew", SM_MapsdoneW, "Shows your or a specified player's maps done on w-only.");
-	RegConsoleCmdEx("sm_mapsdonestam", SM_MapsdoneStam, "Shows your or a specified player's maps done on stamina.");
-	RegConsoleCmdEx("sm_mapsdonehsw", SM_MapsdoneHSW, "Shows your or a specified player's maps done on half-sideways.");
-	RegConsoleCmdEx("sm_bmapsdone", SM_BMapsdone, "Shows your or a specified player's bonus maps done.");
-	
-	RegConsoleCmdEx("sm_stats", SM_Stats, "Shows the stats of you or a specified player.");
-	RegConsoleCmdEx("sm_playtime", SM_Playtime, "Shows the people who played the most.");
-	
 	RegConsoleCmdEx("sm_ccname", SM_ColoredName, "Change colored name.");
 	RegConsoleCmdEx("sm_ccmsg", SM_ColoredMsg, "Change the color of your messages.");
 	RegConsoleCmdEx("sm_cchelp", SM_Colorhelp, "For help on creating a custom name tag with colors and a color message.");
@@ -116,37 +118,89 @@ public OnPluginStart()
 	RegAdminCmd("sm_reloadranks", SM_ReloadRanks, ADMFLAG_CHEATS, "Reloads chat ranks.");
 	
 	// Chat ranks
+	g_hChatRanksRanges = CreateArray(2);
+	g_hChatRanksNames  = CreateArray(ByteCountToCells(256));
 	LoadChatRanks();
 	
-	g_hCustomSteams  	= CreateArray(32);
-	g_hCustomNames   	= CreateArray(128);
-	g_hCustomMessages	= CreateArray(256);
+	// Custom chat ranks
+	g_hCustomSteams  	= CreateArray(ByteCountToCells(32));
+	g_hCustomNames   	= CreateArray(ByteCountToCells(128));
+	g_hCustomMessages	= CreateArray(ByteCountToCells(256));
 	g_hCustomUse 	   	= CreateArray();
-
+	
 	// Makes FindTarget() work properly
 	LoadTranslations("common.phrases");
 	
 	// Command listeners
 	AddCommandListener(Command_Say, "say");
+	
+	g_iMVPs_offset = FindSendPropInfo("CCSPlayerResource", "m_iMVPs");
+}
+
+public OnEntityCreated(entity, const String:classname[])
+{
+	if(StrContains(classname, "_player_manager") != -1)
+	{
+		SDKHook(entity, SDKHook_ThinkPost, PlayerManager_OnThinkPost);
+	}
 }
 
 public APLRes:AskPluginLoad2(Handle:myself, bool:late, String:error[], err_max)
 {
 	CreateNative("DB_UpdateRanks", Native_UpdateRanks);
+	CreateNative("Timer_EnableCustomChat", Native_EnableCustomChat);
+	CreateNative("Timer_DisableCustomChat", Native_DisableCustomChat);
+	CreateNative("Timer_SteamIDHasCustomChat", Native_SteamIDHasCustomChat);
+	CreateNative("Timer_OpenStatsMenu", Native_OpenStatsMenu);
 	
 	return APLRes_Success;
 }
 
 public OnMapStart()
 {	
+	if(g_MapList != INVALID_HANDLE)
+		CloseHandle(g_MapList);
+	
 	g_MapList = ReadMapList();
 	
 	CreateTimer(1.0, UpdateDeaths, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
 }
 
+public OnClientAuthorized(client, const String:auth[])
+{
+	new idx = FindStringInArray(g_hCustomSteams, auth);
+	if(idx != -1)
+	{
+		g_ClientUseCustom[client]  = GetArrayCell(g_hCustomUse, idx);
+	}
+}
+
+public bool:OnClientConnect(client)
+{
+	g_ClientUseCustom[client]  = 0;
+	
+	for(new Type; Type < MAX_TYPES; Type++)
+	{
+		for(new Style; Style < MAX_STYLES; Style++)
+		{
+			g_Rank[client][Type][Style]   = 0;
+			g_Points[client][Type][Style] = 0;
+			g_RecordCount[client]         = 0;
+		}
+	}
+	
+	return true;
+}
+
 public OnPlayerIDLoaded(client)
 {
-	DB_SetClientRank(client);
+	SetClientRank(client);
+	SetRecordCount(client);
+}
+
+public OnMapTimesLoaded()
+{
+	DB_LoadStats();
 }
 
 public OnTimerChatChanged(MessageType, String:Message[])
@@ -154,23 +208,74 @@ public OnTimerChatChanged(MessageType, String:Message[])
 	if(MessageType == 0)
 	{
 		Format(g_msg_start, sizeof(g_msg_start), Message);
-		ReplaceString(g_msg_start, sizeof(g_msg_start), "^", "\x07", false);
+		ReplaceMessage(g_msg_start, sizeof(g_msg_start));
 	}
 	else if(MessageType == 1)
 	{
 		Format(g_msg_varcol, sizeof(g_msg_varcol), Message);
-		ReplaceString(g_msg_varcol, sizeof(g_msg_varcol), "^", "\x07", false);
+		ReplaceMessage(g_msg_varcol, sizeof(g_msg_varcol));
 	}
 	else if(MessageType == 2)
 	{
 		Format(g_msg_textcol, sizeof(g_msg_textcol), Message);
-		ReplaceString(g_msg_textcol, sizeof(g_msg_textcol), "^", "\x07", false);
+		ReplaceMessage(g_msg_textcol, sizeof(g_msg_textcol));
+	}
+}
+
+public OnStylesLoaded()
+{
+	RegConsoleCmdPerStyle("rank", SM_Rank, "Show your rank for {Type} timer on {Style} style.");
+	RegConsoleCmdPerStyle("mapsleft", SM_Mapsleft, "Show maps left for {Type} timer on {Style} style.");
+	RegConsoleCmdPerStyle("mapsdone", SM_Mapsdone, "Show maps done for {Type} timer on {Style} style.");
+	RegConsoleCmdPerStyle("top", SM_Top, "Show list of top players for {Type} timer on {Style} style.");
+	RegConsoleCmdPerStyle("topwr", SM_TopWorldRecord, "Show who has the most records for {Type} timer on {Style} style.");
+	RegConsoleCmdPerStyle("stats", SM_Stats, "Shows a player's stats for {Type} timer on {Style} style.");
+	
+	for(new Type; Type < MAX_TYPES; Type++)
+	{
+		for(new Style; Style < MAX_STYLES; Style++)
+		{
+			if(Style_IsEnabled(Style) && Style_IsTypeAllowed(Style, Type))
+			{
+				g_hRanksPlayerID[Type][Style] = CreateArray();
+				g_hRanksPoints[Type][Style]   = CreateArray();
+				g_hRanksNames[Type][Style]    = CreateArray(ByteCountToCells(MAX_NAME_LENGTH));
+				
+				g_hRecordListID[Type][Style]    = CreateArray();
+				g_hRecordListCount[Type][Style] = CreateArray();
+				
+				g_hMapsDone[Type][Style]        = CreateArray();
+				g_hMapsDoneHndlRef[Type][Style] = CreateArray();
+			}
+		}
+	}
+}
+
+ReplaceMessage(String:message[], maxlength)
+{
+	if(g_GameType == GameType_CSS)
+	{
+		ReplaceString(message, maxlength, "^", "\x07", false);
+	}
+	else if(g_GameType == GameType_CSGO)
+	{
+		ReplaceString(message, maxlength, "^A", "\x0A");
+		ReplaceString(message, maxlength, "^1", "\x01");
+		ReplaceString(message, maxlength, "^2", "\x02");
+		ReplaceString(message, maxlength, "^3", "\x03");
+		ReplaceString(message, maxlength, "^4", "\x04");
+		ReplaceString(message, maxlength, "^5", "\x05");
+		ReplaceString(message, maxlength, "^6", "\x06");
+		ReplaceString(message, maxlength, "^7", "\x07");
 	}
 }
 
 public Action:Command_Say(client, const String:command[], argc)
 {
-	g_bNewMessage = true;
+	if(GetConVarBool(g_hAllChat))
+	{
+		g_bNewMessage = true;
+	}
 }
 
 public Action:OnChatMessage(&author, Handle:recipients, String:name[], String:message[])
@@ -178,18 +283,20 @@ public Action:OnChatMessage(&author, Handle:recipients, String:name[], String:me
 	GetChatName(author, name, MAXLENGTH_NAME);
 	GetChatMessage(author, message, MAXLENGTH_MESSAGE);
 	
-	if(g_bNewMessage && GetMessageFlags() & CHATFLAGS_ALL && !IsPlayerAlive(author))
+	if(g_bNewMessage == true)
 	{
-		for(new client = 1; client <= MaxClients; client++)
+		if(GetMessageFlags() & CHATFLAGS_ALL && !IsPlayerAlive(author))
 		{
-			if(IsClientConnected(client) && IsClientInGame(client) && IsPlayerAlive(client))
+			for(new client = 1; client <= MaxClients; client++)
 			{
-				PushArrayCell(recipients, client);
+				if(IsClientConnected(client) && IsClientInGame(client) && IsPlayerAlive(client))
+				{
+					PushArrayCell(recipients, client);
+				}
 			}
 		}
 		g_bNewMessage = false;
 	}
-	g_bNewMessage = false;
 	
 	return Plugin_Changed;
 }
@@ -221,13 +328,13 @@ FormatTag(client, String:buffer[], maxlength)
 
 GetChatName(client, String:buffer[], maxlength)
 {	
-	if(g_bClientHasCustom[client] && (g_ClientUseCustom[client] & CC_NAME) && GetConVarBool(g_hUseCustomChat))
+	if((g_ClientUseCustom[client] & CC_HASCC) && (g_ClientUseCustom[client] & CC_NAME) && GetConVarBool(g_hUseCustomChat))
 	{
 		decl String:sAuth[32];
 		GetClientAuthString(client, sAuth, sizeof(sAuth));
 		
-		new idx;
-		if((idx = FindStringInArray(g_hCustomSteams, sAuth)) != -1)
+		new idx = FindStringInArray(g_hCustomSteams, sAuth);
+		if(idx != -1)
 		{
 			GetArrayString(g_hCustomNames, idx, buffer, maxlength);
 			FormatTag(client, buffer, maxlength);
@@ -238,7 +345,7 @@ GetChatName(client, String:buffer[], maxlength)
 		new iSize = GetArraySize(g_hChatRanksRanges);
 		for(new i=0; i<iSize; i++)
 		{
-			if(GetArrayCell(g_hChatRanksRanges, i, 0) <= g_rank[client] <= GetArrayCell(g_hChatRanksRanges, i, 1))
+			if(GetArrayCell(g_hChatRanksRanges, i, 0) <= g_Rank[client][TIMER_MAIN][0] <= GetArrayCell(g_hChatRanksRanges, i, 1))
 			{
 				GetArrayString(g_hChatRanksNames, i, buffer, maxlength);
 				FormatTag(client, buffer, maxlength);
@@ -250,13 +357,13 @@ GetChatName(client, String:buffer[], maxlength)
 
 GetChatMessage(client, String:message[], maxlength)
 {
-	if(g_bClientHasCustom[client] && (g_ClientUseCustom[client] & CC_MSGCOL) && GetConVarBool(g_hUseCustomChat))
+	if((g_ClientUseCustom[client] & CC_HASCC) && (g_ClientUseCustom[client] & CC_MSGCOL) && GetConVarBool(g_hUseCustomChat))
 	{
 		decl String:sAuth[32];
 		GetClientAuthString(client, sAuth, sizeof(sAuth));
 		
-		new idx;
-		if((idx = FindStringInArray(g_hCustomSteams, sAuth)) != -1)
+		new idx = FindStringInArray(g_hCustomSteams, sAuth);
+		if(idx != -1)
 		{
 			decl String:buffer[MAXLENGTH_MESSAGE];
 			GetArrayString(g_hCustomMessages, idx, buffer, MAXLENGTH_MESSAGE);
@@ -264,27 +371,6 @@ GetChatMessage(client, String:message[], maxlength)
 			Format(message, maxlength, "%s%s", buffer, message);
 		}
 	}
-}
-
-public OnClientAuthorized(client, const String:auth[])
-{
-	new idx;
-	if((idx = FindStringInArray(g_hCustomSteams, auth)) != -1)
-	{
-		g_bClientHasCustom[client] = true;
-			
-		g_ClientUseCustom[client]  = GetArrayCell(g_hCustomUse, idx);
-	}
-}
-
-public bool:OnClientConnect(client)
-{
-	g_bClientHasCustom[client] = false;
-	g_ClientUseCustom[client]  = 0;
-	
-	g_rank[client] = 0;
-	
-	return true;
 }
 
 public Action:SM_RecalcPts(client, args)
@@ -333,13 +419,13 @@ public RecalcPoints_Callback(Handle:owner, Handle:hndl, String:error[], any:data
 {
 	if(hndl != INVALID_HANDLE)
 	{
-		new  rows = SQL_GetRowCount(hndl);
+		new rows = SQL_GetRowCount(hndl);
 		decl String:sMapName[64], String:query[128];
 		
 		g_RecalcTotal    = rows * 4;
 		g_RecalcProgress = 0;
 		
-		for(new i=0; i<rows; i++)
+		for(new i = 0; i < rows; i++)
 		{
 			SQL_FetchRow(hndl);
 			
@@ -347,10 +433,18 @@ public RecalcPoints_Callback(Handle:owner, Handle:hndl, String:error[], any:data
 			
 			if(FindStringInArray(g_MapList, sMapName) != -1)
 			{
-				UpdateRanks(sMapName, TIMER_MAIN, STYLE_NORMAL, true);
-				UpdateRanks(sMapName, TIMER_MAIN, STYLE_SIDEWAYS, true);
-				UpdateRanks(sMapName, TIMER_MAIN, STYLE_WONLY, true);
-				UpdateRanks(sMapName, TIMER_BONUS, STYLE_NORMAL, true);
+				new TotalStyles = Style_GetTotal();
+				
+				for(new Type = 0; Type < MAX_TYPES; Type++)
+				{
+					for(new Style = 0; Style < TotalStyles; Style++)
+					{
+						if(Style_IsEnabled(Style) && Style_IsTypeAllowed(Style, Type))
+						{
+							UpdateRanks(sMapName, Type, Style, true);
+						}
+					}
+				}
 			}
 			else
 			{
@@ -404,564 +498,406 @@ public RecalcPoints_Callback2(Handle:owner, Handle:hndl, String:error[], any:dat
 
 public Action:SM_Rank(client, args)
 {
-	if(!IsSpamming(client))
+	new Type, Style;
+	if(GetTypeStyleFromCommand("rank", Type, Style))
 	{
-		SetIsSpamming(client, 1.0);
-		if(args == 0)
+		if(!IsSpamming(client))
 		{
-			DB_ShowRank(client, client, ALL, ALL);
-		}
-		else
-		{
-			decl String:targetName[128];
-			GetCmdArgString(targetName, sizeof(targetName));
-			new target = FindTarget(client, targetName, true, false);
-			if(target != -1)
-				DB_ShowRank(client, target, ALL, ALL);
+			SetIsSpamming(client, 1.0);
+			if(args == 0)
+			{
+				DB_ShowRank(client, client, Type, Style);
+			}
+			else
+			{
+				decl String:targetName[128];
+				GetCmdArgString(targetName, sizeof(targetName));
+				new target = FindTarget(client, targetName, true, false);
+				if(target != -1)
+					DB_ShowRank(client, target, Type, Style);
+			}
 		}
 	}
-	return Plugin_Handled;
-}
-
-public Action:SM_RankN(client, args)
-{
-	if(!IsSpamming(client))
-	{
-		SetIsSpamming(client, 1.0);
-		if(args == 0)
-		{
-			DB_ShowRank(client, client, TIMER_MAIN, STYLE_NORMAL);
-		}
-		else
-		{
-			decl String:targetName[128];
-			GetCmdArgString(targetName, sizeof(targetName));
-			new target = FindTarget(client, targetName, true, false);
-			if(target != -1)
-				DB_ShowRank(client, target, TIMER_MAIN, STYLE_NORMAL);
-		}
-	}
-	return Plugin_Handled;
-}
-
-public Action:SM_RankSW(client, args)
-{
-	if(!IsSpamming(client))
-	{
-		SetIsSpamming(client, 1.0);
-		
-		if(args == 0)
-		{
-			DB_ShowRank(client, client, TIMER_MAIN, STYLE_SIDEWAYS);
-		}
-		else
-		{
-			decl String:targetName[128];
-			GetCmdArgString(targetName, sizeof(targetName));
-			new target = FindTarget(client, targetName, true, false);
-			if(target != -1)
-				DB_ShowRank(client, target, TIMER_MAIN, STYLE_SIDEWAYS);
-		}
-	}
-	return Plugin_Handled;
-}
-
-public Action:SM_RankW(client, args)
-{
-	if(!IsSpamming(client))
-	{
-		SetIsSpamming(client, 1.0);
-		
-		if(args == 0)
-		{
-			DB_ShowRank(client, client, TIMER_MAIN, STYLE_WONLY);
-		}
-		else
-		{
-			decl String:targetName[128];
-			GetCmdArgString(targetName, sizeof(targetName));
-			new target = FindTarget(client, targetName, true, false);
-			if(target != -1)
-				DB_ShowRank(client, target, TIMER_MAIN, STYLE_WONLY);
-		}
-	}	
-	return Plugin_Handled;
-}
-
-public Action:SM_RankStam(client, args)
-{
-	if(!IsSpamming(client))
-	{
-		SetIsSpamming(client, 1.0);
-		
-		if(args == 0)
-		{
-			DB_ShowRank(client, client, TIMER_MAIN, STYLE_STAMINA);
-		}
-		else
-		{
-			decl String:targetName[128];
-			GetCmdArgString(targetName, sizeof(targetName));
-			new target = FindTarget(client, targetName, true, false);
-			if(target != -1)
-				DB_ShowRank(client, target, TIMER_MAIN, STYLE_STAMINA);
-		}
-	}	
-	return Plugin_Handled;
-}
-
-public Action:SM_RankHSW(client, args)
-{
-	if(!IsSpamming(client))
-	{
-		SetIsSpamming(client, 1.0);
-		
-		if(args == 0)
-		{
-			DB_ShowRank(client, client, TIMER_MAIN, STYLE_HALFSIDEWAYS);
-		}
-		else
-		{
-			decl String:targetName[128];
-			GetCmdArgString(targetName, sizeof(targetName));
-			new target = FindTarget(client, targetName, true, false);
-			if(target != -1)
-				DB_ShowRank(client, target, TIMER_MAIN, STYLE_HALFSIDEWAYS);
-		}
-	}	
-	return Plugin_Handled;
-}
-
-public Action:SM_BRank(client, args)
-{
-	if(!IsSpamming(client))
-	{
-		SetIsSpamming(client, 1.0);
-		
-		if(args == 0)
-		{
-			DB_ShowRank(client, client, TIMER_BONUS, STYLE_NORMAL);
-		}
-		else
-		{
-			decl String:targetName[128];
-			GetCmdArgString(targetName, sizeof(targetName));
-			new target = FindTarget(client, targetName, true, false);
-			if(target != -1)
-				DB_ShowRank(client, target, TIMER_BONUS, STYLE_NORMAL);
-		}
-	}
+	
 	return Plugin_Handled;
 }
 
 public Action:SM_Top(client, args)
 {
-	if(!IsSpamming(client))
+	new Type, Style;
+	if(GetTypeStyleFromCommand("top", Type, Style))
 	{
-		SetIsSpamming(client, 1.0);
-		
-		DB_ShowTopAll(client);
+		if(!IsSpamming(client))
+		{
+			SetIsSpamming(client, 1.0);
+			
+			DB_ShowTopAllSpec(client, Type, Style);
+		}
 	}
-	return Plugin_Handled;
-}
-
-public Action:SM_TopN(client, args)
-{
-	if(!IsSpamming(client))
-	{
-		SetIsSpamming(client, 1.0);
-		
-		DB_ShowTopAllSpec(client, TIMER_MAIN, STYLE_NORMAL);
-	}
-	return Plugin_Handled;
-}
-
-public Action:SM_TopSW(client, args)
-{
-	if(!IsSpamming(client))
-	{
-		SetIsSpamming(client, 1.0);
-		
-		DB_ShowTopAllSpec(client, TIMER_MAIN, STYLE_SIDEWAYS);
-	}
-	return Plugin_Handled;
-}
-
-public Action:SM_TopW(client, args)
-{
-	if(!IsSpamming(client))
-	{
-		SetIsSpamming(client, 1.0);
-		
-		DB_ShowTopAllSpec(client, TIMER_MAIN, STYLE_WONLY);
-	}
-	return Plugin_Handled;
-}
-
-public Action:SM_TopStam(client, args)
-{
-	if(!IsSpamming(client))
-	{
-		SetIsSpamming(client, 1.0);
-		
-		DB_ShowTopAllSpec(client, TIMER_MAIN, STYLE_STAMINA);
-	}
-	return Plugin_Handled;
-}
-
-public Action:SM_TopHSW(client, args)
-{
-	if(!IsSpamming(client))
-	{
-		SetIsSpamming(client, 1.0);
-		
-		DB_ShowTopAllSpec(client, TIMER_MAIN, STYLE_HALFSIDEWAYS);
-	}
-	return Plugin_Handled;
-}
-
-public Action:SM_BTop(client, args)
-{
-	if(!IsSpamming(client))
-	{
-		SetIsSpamming(client, 1.0);
-		
-		DB_ShowTopAllSpec(client, TIMER_BONUS, STYLE_NORMAL);
-	}
+	
 	return Plugin_Handled;
 }
 
 public Action:SM_Mapsleft(client, args)
 {
-	if(!IsSpamming(client))
+	new Type, Style;
+	if(GetTypeStyleFromCommand("mapsleft", Type, Style))
 	{
-		SetIsSpamming(client, 1.0);
-		
-		if(args == 0)
+		if(!IsSpamming(client))
 		{
-			DB_ShowMapsleft(client, client, ALL, ALL);
-		}
-		else
-		{
-			decl String:targetName[128];
-			GetCmdArgString(targetName, sizeof(targetName));
-			new target = FindTarget(client, targetName, true, false);
-			if(target != -1)
-				DB_ShowMapsleft(client, target, ALL, ALL);
+			SetIsSpamming(client, 1.0);
+			
+			if(args == 0)
+			{
+				DB_ShowMapsleft(client, client, Type, Style);
+			}
+			else
+			{
+				decl String:targetName[128];
+				GetCmdArgString(targetName, sizeof(targetName));
+				new target = FindTarget(client, targetName, true, false);
+				if(target != -1)
+					DB_ShowMapsleft(client, target, Type, Style);
+			}
 		}
 	}
-	return Plugin_Handled;
-}
-
-public Action:SM_MapsleftN(client, args)
-{
-	if(!IsSpamming(client))
-	{
-		SetIsSpamming(client, 1.0);
-		
-		if(args == 0)
-		{
-			DB_ShowMapsleft(client, client, TIMER_MAIN, STYLE_NORMAL);
-		}
-		else
-		{
-			decl String:targetName[128];
-			GetCmdArgString(targetName, sizeof(targetName));
-			new target = FindTarget(client, targetName, true, false);
-			if(target != -1)
-				DB_ShowMapsleft(client, target, TIMER_MAIN, STYLE_NORMAL);
-		}
-	}
-	return Plugin_Handled;
-}
-
-public Action:SM_MapsleftSW(client, args)
-{
-	if(!IsSpamming(client))
-	{
-		SetIsSpamming(client, 1.0);
-		
-		if(args == 0)
-		{
-			DB_ShowMapsleft(client, client, TIMER_MAIN, STYLE_SIDEWAYS);
-		}
-		else
-		{
-			decl String:targetName[128];
-			GetCmdArgString(targetName, sizeof(targetName));
-			new target = FindTarget(client, targetName, true, false);
-			if(target != -1)
-				DB_ShowMapsleft(client, target, TIMER_MAIN, STYLE_SIDEWAYS);
-		}
-	}
-	return Plugin_Handled;
-}
-
-public Action:SM_MapsleftW(client, args)
-{
-	if(!IsSpamming(client))
-	{
-		SetIsSpamming(client, 1.0);
-		
-		if(args == 0)
-		{
-			DB_ShowMapsleft(client, client, TIMER_MAIN, STYLE_WONLY);
-		}
-		else
-		{
-			decl String:targetName[128];
-			GetCmdArgString(targetName, sizeof(targetName));
-			new target = FindTarget(client, targetName, true, false);
-			if(target != -1)
-				DB_ShowMapsleft(client, target, TIMER_MAIN, STYLE_WONLY);
-		}
-	}
-	return Plugin_Handled;
-}
-
-public Action:SM_MapsleftStam(client, args)
-{
-	if(!IsSpamming(client))
-	{
-		SetIsSpamming(client, 1.0);
-		
-		if(args == 0)
-		{
-			DB_ShowMapsleft(client, client, TIMER_MAIN, STYLE_STAMINA);
-		}
-		else
-		{
-			decl String:targetName[128];
-			GetCmdArgString(targetName, sizeof(targetName));
-			new target = FindTarget(client, targetName, true, false);
-			if(target != -1)
-				DB_ShowMapsleft(client, target, TIMER_MAIN, STYLE_STAMINA);
-		}
-	}
-	return Plugin_Handled;
-}
-
-public Action:SM_MapsleftHSW(client, args)
-{
-	if(!IsSpamming(client))
-	{
-		SetIsSpamming(client, 1.0);
-		
-		if(args == 0)
-		{
-			DB_ShowMapsleft(client, client, TIMER_MAIN, STYLE_HALFSIDEWAYS);
-		}
-		else
-		{
-			decl String:targetName[128];
-			GetCmdArgString(targetName, sizeof(targetName));
-			new target = FindTarget(client, targetName, true, false);
-			if(target != -1)
-				DB_ShowMapsleft(client, target, TIMER_MAIN, STYLE_HALFSIDEWAYS);
-		}
-	}
-	return Plugin_Handled;
-}
-
-public Action:SM_BMapsleft(client, args)
-{
-	if(!IsSpamming(client))
-	{
-		SetIsSpamming(client, 1.0);
-		
-		if(args == 0)
-		{
-			DB_ShowMapsleft(client, client, TIMER_BONUS, ALL);
-		}
-		else
-		{
-			decl String:targetName[128];
-			GetCmdArgString(targetName, sizeof(targetName));
-			new target = FindTarget(client, targetName, true, false);
-			if(target != -1)
-				DB_ShowMapsleft(client, target, TIMER_BONUS, ALL);
-		}
-	}
+	
 	return Plugin_Handled;
 }
 
 public Action:SM_Mapsdone(client, args)
 {
-	if(!IsSpamming(client))
+	new Type, Style;
+	if(GetTypeStyleFromCommand("mapsdone", Type, Style))
 	{
-		SetIsSpamming(client, 1.0);
-		
-		if(args == 0)
+		if(!IsSpamming(client))
 		{
-			DB_ShowMapsdone(client, client, ALL, ALL);
-		}
-		else
-		{
-			decl String:targetName[128];
-			GetCmdArgString(targetName, sizeof(targetName));
-			new target = FindTarget(client, targetName, true, false);
-			if(target != -1)
-				DB_ShowMapsdone(client, target, ALL, ALL);
-		}
-	}
-	return Plugin_Handled;
-}
-
-public Action:SM_MapsdoneN(client, args)
-{
-	if(!IsSpamming(client))
-	{
-		SetIsSpamming(client, 1.0);
-		
-		if(args == 0)
-		{
-			DB_ShowMapsdone(client, client, TIMER_MAIN, STYLE_NORMAL);
-		}
-		else
-		{
-			decl String:targetName[128];
-			GetCmdArgString(targetName, sizeof(targetName));
-			new target = FindTarget(client, targetName, true, false);
-			if(target != -1)
-				DB_ShowMapsdone(client, target, TIMER_MAIN, STYLE_NORMAL);
-		}
-	}
-	return Plugin_Handled;
-}
-
-public Action:SM_MapsdoneSW(client, args)
-{
-	if(!IsSpamming(client))
-	{
-		SetIsSpamming(client, 1.0);
-		
-		if(args == 0)
-		{
-			DB_ShowMapsdone(client, client, TIMER_MAIN, STYLE_SIDEWAYS);
-		}
-		else
-		{
-			decl String:targetName[128];
-			GetCmdArgString(targetName, sizeof(targetName));
-			new target = FindTarget(client, targetName, true, false);
-			if(target != -1)
-				DB_ShowMapsdone(client, target, TIMER_MAIN, STYLE_SIDEWAYS);
-		}
-	}
-	return Plugin_Handled;
-}
-
-public Action:SM_MapsdoneW(client, args)
-{
-	if(!IsSpamming(client))
-	{
-		SetIsSpamming(client, 1.0);
-		
-		if(args == 0)
-		{
-			DB_ShowMapsdone(client, client, TIMER_MAIN, STYLE_WONLY);
-		}
-		else
-		{
-			decl String:targetName[128];
-			GetCmdArgString(targetName, sizeof(targetName));
-			new target = FindTarget(client, targetName, true, false);
-			if(target != -1)
-				DB_ShowMapsdone(client, target, TIMER_MAIN, STYLE_WONLY);
-		}
-	}
-	return Plugin_Handled;
-}
-
-public Action:SM_MapsdoneStam(client, args)
-{
-	if(!IsSpamming(client))
-	{
-		SetIsSpamming(client, 1.0);
-		
-		if(args == 0)
-		{
-			DB_ShowMapsdone(client, client, TIMER_MAIN, STYLE_STAMINA);
-		}
-		else
-		{
-			decl String:targetName[128];
-			GetCmdArgString(targetName, sizeof(targetName));
-			new target = FindTarget(client, targetName, true, false);
-			if(target != -1)
-				DB_ShowMapsdone(client, target, TIMER_MAIN, STYLE_STAMINA);
-		}
-	}
-	return Plugin_Handled;
-}
-
-public Action:SM_MapsdoneHSW(client, args)
-{
-	if(!IsSpamming(client))
-	{
-		SetIsSpamming(client, 1.0);
-		
-		if(args == 0)
-		{
-			DB_ShowMapsdone(client, client, TIMER_MAIN, STYLE_HALFSIDEWAYS);
-		}
-		else
-		{
-			decl String:targetName[128];
-			GetCmdArgString(targetName, sizeof(targetName));
-			new target = FindTarget(client, targetName, true, false);
-			if(target != -1)
-				DB_ShowMapsdone(client, target, TIMER_MAIN, STYLE_HALFSIDEWAYS);
-		}
-	}
-	return Plugin_Handled;
-}
-
-public Action:SM_BMapsdone(client, args)
-{
-	if(!IsSpamming(client))
-	{
-		SetIsSpamming(client, 1.0);
-		
-		if(args == 0)
-		{
-			DB_ShowMapsdone(client, client, TIMER_BONUS, ALL);
-		}
-		else
-		{
-			decl String:targetName[128];
-			GetCmdArgString(targetName, sizeof(targetName));
-			new target = FindTarget(client, targetName, true, false);
-			if(target != -1)
-				DB_ShowMapsdone(client, target, TIMER_BONUS, ALL);
-		}
-	}
-	return Plugin_Handled;
-}
-
-public Action:SM_Playtime(client, args)
-{
-	if(!IsSpamming(client))
-	{
-		SetIsSpamming(client, 1.0);
-		
-		if(args == 0)
-		{
-			DB_ShowPlaytime(client, client);
-		}
-		else
-		{
-			decl String:arg[250];
-			GetCmdArgString(arg, sizeof(arg));
+			SetIsSpamming(client, 1.0);
 			
-			new target = FindTarget(client, arg, true, false);
-			if(target != -1)
+			new PlayerID;
+			if(args == 0)
 			{
-				DB_ShowPlaytime(client, target);
+				PlayerID = GetPlayerID(client);
+				
+				if(PlayerID != 0)
+				{
+					DB_ShowMapsdone(client, PlayerID, Type, Style);
+				}
+				else
+				{
+					PrintColorText(client, "%s%sYou have not been authorized by the timer yet.",
+						g_msg_start,
+						g_msg_textcol);
+				}
+			}
+			else
+			{
+				decl String:targetName[128];
+				GetCmdArgString(targetName, sizeof(targetName));
+				new target = FindTarget(client, targetName, true, false);
+				if(target != -1)
+				{
+					PlayerID = GetPlayerID(target);
+					
+					if(PlayerID != 0)
+					{
+						DB_ShowMapsdone(client, PlayerID, Type, Style);
+					}
+					else
+					{
+						PrintColorText(client, "%s%s%N%s has not been authorized by the timer yet.",
+							g_msg_start,
+							g_msg_varcol,
+							target,
+							g_msg_textcol);
+					}
+				}
 			}
 		}
 	}
+	
 	return Plugin_Handled;
+}
+
+public Action:SM_Stats(client, args)
+{
+	new Type, Style;
+	if(GetTypeStyleFromCommand("stats", Type, Style))
+	{
+		if(!IsSpamming(client))
+		{
+			SetIsSpamming(client, 1.0);
+			
+			new PlayerID;
+			
+			if(args == 0)
+			{
+				PlayerID = GetPlayerID(client);
+				
+				if(PlayerID != 0)
+				{
+					OpenStatsMenu(client, PlayerID, Type, Style);
+				}
+				else
+				{
+					PrintColorText(client, "%s%sYou have not been authorized by the timer yet.",
+						g_msg_start,
+						g_msg_textcol);
+				}
+			}
+			else
+			{
+				decl String:targetName[128];
+				GetCmdArgString(targetName, sizeof(targetName));
+				new target = FindTarget(client, targetName, true, false);
+				if(target != -1)
+				{
+					PlayerID = GetPlayerID(target);
+					
+					if(PlayerID != 0)
+					{
+						OpenStatsMenu(client, PlayerID, Type, Style);
+					}
+					else
+					{
+						PrintColorText(client, "%s%s%N%s has not been authorized by the timer yet.",
+							g_msg_start,
+							g_msg_varcol,
+							target,
+							g_msg_textcol);
+					}
+				}
+			}
+		}
+	}
+	
+	return Plugin_Handled;
+}
+
+OpenStatsMenu(client, PlayerID, Type, Style)
+{
+	new Rank = FindValueInArray(g_hRanksPlayerID[Type][Style], PlayerID);
+	if(Rank != -1)
+	{
+		Rank++;
+		new Handle:menu = CreateMenu(Menu_Stats);
+		
+		decl String:sName[MAX_NAME_LENGTH], String:sAuth[32], String:sType[32], String:sStyle[32];
+		GetNameFromPlayerID(PlayerID, sName, sizeof(sName));
+		GetSteamIDFromPlayerID(PlayerID, sAuth, sizeof(sAuth));
+		GetTypeName(Type, sType, sizeof(sType));
+		GetStyleName(Style, sStyle, sizeof(sStyle));
+		
+		SetMenuTitle(menu, "Stats for %s (%s)\n--------------------------------\n", sName, sAuth);
+		
+		// Get Record count
+		new RecordCount;
+		new idx = FindValueInArray(g_hRecordListID[Type][Style], PlayerID);
+		if(idx != -1)
+		{
+			RecordCount = GetArrayCell(g_hRecordListCount[Type][Style], idx);
+		}
+		
+		// Get maps done
+		new Handle:hCell = GetArrayCell(g_hMapsDone[Type][Style], PlayerID);
+		
+		new MapsDone;
+		if(hCell != INVALID_HANDLE)
+			MapsDone = GetArraySize(hCell);
+		
+		new TotalMaps;
+		if(Type == TIMER_MAIN)
+			TotalMaps = GetTotalZonesAllMaps(MAIN_START);
+		else
+			TotalMaps = GetTotalZonesAllMaps(BONUS_START);
+			
+		new Float:fCompletion = float(MapsDone) / float(TotalMaps) * 100.0;
+		
+		// Get rank info
+		new TotalRanks = GetArraySize(g_hRanksPlayerID[Type][Style]);
+		new Float:fPoints = GetArrayCell(g_hRanksPoints[Type][Style], Rank - 1);
+		
+		decl String:sDisplay[256];
+		FormatEx(sDisplay, sizeof(sDisplay), "%s [%s]\nWorld Records: %d\n \nMaps done: %d / %d (%.1f%%)\n \nRank: %d / %d (%d Pts.)\n--------------------------------",
+			sType,
+			sStyle,
+			RecordCount,
+			MapsDone,
+			TotalMaps,
+			fCompletion,
+			Rank,
+			TotalRanks,
+			RoundToFloor(fPoints));
+		
+		decl String:sInfo[32];
+		FormatEx(sInfo, sizeof(sInfo), "%d;%d;%d", PlayerID, Type, Style);
+		AddMenuItem(menu, sInfo, sDisplay);
+		
+		for(new lType; lType < MAX_TYPES; lType++)
+		{
+			GetTypeName(lType, sType, sizeof(sType));
+			for(new lStyle; lStyle < MAX_STYLES; lStyle++)
+			{
+				if(lType == Type && lStyle == Style)
+					continue;
+				
+				if(Style_IsEnabled(lStyle) && Style_IsTypeAllowed(lStyle, lType))
+				{
+					GetStyleName(lStyle, sStyle, sizeof(sStyle));
+					
+					FormatEx(sInfo, sizeof(sInfo), "%d;%d;%d", PlayerID, lType, lStyle);
+					FormatEx(sDisplay, sizeof(sDisplay), "%s [%s]", sType, sStyle);
+					
+					AddMenuItem(menu, sInfo, sDisplay);
+				}
+			}
+		}
+		
+		DisplayMenu(menu, client, MENU_TIME_FOREVER);
+	}
+	else
+	{
+		if(g_bStatsLoaded == false)
+		{
+			PrintColorText(client, "%s%sThe stats have not been loaded yet.",
+				g_msg_start,
+				g_msg_textcol);
+		}
+		else
+		{
+			decl String:sType[32], String:sStyle[32];
+			GetTypeName(Type, sType, sizeof(sType));
+			GetStyleName(Style, sStyle, sizeof(sStyle));
+			
+			decl String:slType[32], String:slStyle[32];
+			for(new lType; lType < MAX_TYPES; lType++)
+			{
+				GetTypeName(lType, slType, sizeof(slType));
+				
+				for(new lStyle; lStyle < MAX_STYLES; lStyle++)
+				{
+					if(Style_IsEnabled(lStyle) && Style_IsTypeAllowed(lStyle, lType))
+					{
+						GetStyleName(lStyle, slStyle, sizeof(slStyle));
+						
+						if((Rank = FindValueInArray(g_hRanksPlayerID[lType][lStyle], PlayerID)) != -1)
+						{
+							PrintColorText(client, "%s%sCouldn't find stats for [%s%s%s] - [%s%s%s], showing stats for [%s%s%s] - [%s%s%s] instead.",
+								g_msg_start,
+								g_msg_textcol,
+								g_msg_varcol,
+								sType,
+								g_msg_textcol,
+								g_msg_varcol,
+								sStyle,
+								g_msg_textcol,
+								g_msg_varcol,
+								slType,
+								g_msg_textcol,
+								g_msg_varcol,
+								slStyle,
+								g_msg_textcol);
+							
+							OpenStatsMenu(client, PlayerID, lType, lStyle);
+							return;
+						}
+					}
+				}
+			}
+			
+			PrintColorText(client, "%s%sThe player you specified is unranked.",
+				g_msg_start,
+				g_msg_textcol);
+		}
+	}
+}
+
+public Menu_Stats(Handle:menu, MenuAction:action, param1, param2)
+{
+	if (action == MenuAction_Select)
+	{
+		decl String:info[32];
+		GetMenuItem(menu, param2, info, sizeof(info));
+		
+		decl String:sInfoExploded[3][16];
+		ExplodeString(info, ";", sInfoExploded, sizeof(sInfoExploded), sizeof(sInfoExploded[]));
+		
+		OpenStatsMenu(param1, StringToInt(sInfoExploded[0]), StringToInt(sInfoExploded[1]), StringToInt(sInfoExploded[2]));
+	}
+	else if (action == MenuAction_End)
+		CloseHandle(menu);
+}
+
+public Native_OpenStatsMenu(Handle:plugin, numParams)
+{
+	OpenStatsMenu(GetNativeCell(1), GetNativeCell(2), GetNativeCell(3), GetNativeCell(4));
+}
+
+public Action:SM_TopWorldRecord(client, args)
+{
+	new Type, Style;
+	
+	if(GetTypeStyleFromCommand("topwr", Type, Style))
+	{
+		decl String:sType[32];
+		GetTypeName(Type, sType, sizeof(sType));
+		
+		decl String:sStyle[32];
+		GetStyleName(Style, sStyle, sizeof(sStyle));
+		
+		new iSize = GetArraySize(g_hRecordListID[Type][Style]);
+		if(iSize > 0)
+		{
+			new Handle:menu = CreateMenu(Menu_RecordCount);
+			SetMenuTitle(menu, "World Record Count [%s] - [%s]", sType, sStyle);
+			
+			new PlayerID, RecordCount, String:sInfo[32], String:sDisplay[64], String:sName[MAX_NAME_LENGTH];
+			for(new idx; idx < iSize; idx++)
+			{
+				PlayerID    = GetArrayCell(g_hRecordListID[Type][Style], idx);
+				RecordCount = GetArrayCell(g_hRecordListCount[Type][Style], idx);
+				
+				FormatEx(sInfo, sizeof(sInfo), "%d;%d;%d", PlayerID, Type, Style);
+				
+				GetNameFromPlayerID(PlayerID, sName, sizeof(sName));
+				FormatEx(sDisplay, sizeof(sDisplay), "#%d: %s (%d)", idx + 1, sName, RecordCount);
+				
+				AddMenuItem(menu, sInfo, sDisplay);
+			}
+			
+			DisplayMenu(menu, client, MENU_TIME_FOREVER);
+		}
+		else
+		{
+			PrintColorText(client, "%s%s[%s%s%s] - [%s%s%s] There are no world records on any map.",
+				g_msg_start,
+				g_msg_textcol,
+				g_msg_varcol,
+				sType,
+				g_msg_textcol,
+				g_msg_varcol,
+				sStyle,
+				g_msg_textcol);
+		}
+	}
+	
+	return Plugin_Handled;
+}
+
+public Menu_RecordCount(Handle:menu, MenuAction:action, param1, param2)
+{
+	if (action == MenuAction_Select)
+	{
+		decl String:sInfo[32];
+		GetMenuItem(menu, param2, sInfo, sizeof(sInfo));
+		
+		decl String:sInfoExploded[3][16];
+		ExplodeString(sInfo, ";", sInfoExploded, sizeof(sInfoExploded), sizeof(sInfoExploded[]));
+		
+		OpenStatsMenu(param1, StringToInt(sInfoExploded[0]), StringToInt(sInfoExploded[1]), StringToInt(sInfoExploded[2]));
+	}
+	else if (action == MenuAction_End)
+		CloseHandle(menu);
 }
 
 public Action:SM_ColoredName(client, args)
@@ -970,7 +906,7 @@ public Action:SM_ColoredName(client, args)
 	{
 		SetIsSpamming(client, 1.0);
 		
-		if(g_bClientHasCustom[client])
+		if(g_ClientUseCustom[client] & CC_HASCC)
 		{
 			decl String:query[512], String:sAuth[32];
 			GetClientAuthString(client, sAuth, sizeof(sAuth));
@@ -1055,7 +991,7 @@ public Action:SM_ColoredMsg(client, args)
 	if(!IsSpamming(client))
 	{
 		SetIsSpamming(client, 1.0);
-		if(g_bClientHasCustom[client])
+		if(g_ClientUseCustom[client] & CC_HASCC)
 		{
 			decl String:query[512], String:sAuth[32];
 			GetClientAuthString(client, sAuth, sizeof(sAuth));
@@ -1152,11 +1088,6 @@ public Action:SM_ReloadRanks(client, args)
 	return Plugin_Handled;
 }
 
-public Action:SM_Stats(client, args)
-{
-	
-}
-
 public Action:SM_EnableCC(client, args)
 {
 	decl String:sArg[256];
@@ -1176,7 +1107,7 @@ public Action:SM_EnableCC(client, args)
 	}
 	else
 	{
-		PrintColorText(client, "%s%ssm_enablecc example: \"sm_enablecc STEAM_0:1:12345\"",
+		ReplyToCommand(client, "sm_enablecc example: \"sm_enablecc STEAM_0:1:12345\"",
 			g_msg_start,
 			g_msg_textcol);
 	}
@@ -1250,19 +1181,23 @@ public EnableCC_Callback1(Handle:owner, Handle:hndl, String:error[], any:pack)
 
 EnableCustomChat(const String:sAuth[])
 {
+	if(FindStringInArray(g_hCustomSteams, sAuth) != -1)
+	{
+		ThrowError("SteamID <%s> already has custom chat privileges.", sAuth);
+	}
+	
 	// Check and enable cc for any clients in the game
 	decl String:sAuth2[32];
-	for(new i=1; i<=MaxClients; i++)
+	for(new client = 1; client <= MaxClients; client++)
 	{
-		if(IsClientInGame(i))
+		if(IsClientInGame(client))
 		{
-			GetClientAuthString(i, sAuth2, sizeof(sAuth2));
+			GetClientAuthString(client, sAuth2, sizeof(sAuth2));
 			if(StrEqual(sAuth, sAuth2))
 			{
-				g_bClientHasCustom[i] = true;
-				g_ClientUseCustom[i]  = CC_HASCC|CC_MSGCOL|CC_NAME;
+				g_ClientUseCustom[client]  = CC_HASCC|CC_MSGCOL|CC_NAME;
 				
-				PrintColorText(i, "%s%sYou have been given custom chat privileges. Type sm_cchelp or ask for help to learn how to use it.",
+				PrintColorText(client, "%s%sYou have been given custom chat privileges. Type sm_cchelp or ask for help to learn how to use it.",
 					g_msg_start,
 					g_msg_textcol);
 					
@@ -1389,31 +1324,30 @@ DisableCustomChat(const String:sAuth[])
 		RemoveFromArray(g_hCustomNames, idx);
 		RemoveFromArray(g_hCustomMessages, idx);
 		RemoveFromArray(g_hCustomUse, idx);
+		
+		decl String:query[512];
+		FormatEx(query, sizeof(query), "UPDATE players SET ccuse=0 WHERE SteamID='%s'",
+			sAuth);
+		SQL_TQuery(g_DB, DisableCC_Callback, query);
 	}
 	
 	// Check and disable cc for any clients in the game
 	decl String:sAuth2[32];
-	for(new i=1; i<=MaxClients; i++)
+	for(new client = 1; client <= MaxClients; client++)
 	{
-		if(IsClientInGame(i))
+		if(IsClientInGame(client))
 		{
-			GetClientAuthString(i, sAuth2, sizeof(sAuth2));
+			GetClientAuthString(client, sAuth2, sizeof(sAuth2));
 			if(StrEqual(sAuth, sAuth2))
 			{
-				g_bClientHasCustom[i] = false;
-				g_ClientUseCustom[i]  = 0;
+				g_ClientUseCustom[client]  = 0;
 				
-				PrintColorText(i, "%s%sYou have lost your custom chat privileges.",
+				PrintColorText(client, "%s%sYou have lost your custom chat privileges.",
 					g_msg_start,
 					g_msg_textcol);
 			}
 		}
 	}
-	
-	decl String:query[512];
-	FormatEx(query, sizeof(query), "UPDATE players SET ccuse=0 WHERE SteamID='%s'",
-		sAuth);
-	SQL_TQuery(g_DB, EnableCC_Callback, query);
 }
 
 public DisableCC_Callback(Handle:owner, Handle:hndl, String:error[], any:data)
@@ -1426,9 +1360,14 @@ public DisableCC_Callback(Handle:owner, Handle:hndl, String:error[], any:data)
 
 public Action:SM_CCList(client, args)
 {
-	decl String:query[512];
-	FormatEx(query, sizeof(query), "SELECT SteamID, User, ccname, ccmsgcol, ccuse FROM players WHERE ccuse != 0");
-	SQL_TQuery(g_DB, CCList_Callback, query, client);
+	if(!IsSpamming(client))
+	{
+		SetIsSpamming(client, 1.0);
+		
+		decl String:query[512];
+		FormatEx(query, sizeof(query), "SELECT SteamID, User, ccname, ccmsgcol, ccuse FROM players WHERE ccuse != 0");
+		SQL_TQuery(g_DB, CCList_Callback, query, client);
+	}
 	
 	return Plugin_Handled;
 }
@@ -1542,7 +1481,7 @@ public Action:UpdateDeaths(Handle:timer, any:data)
 				}
 				else
 				{
-					SetEntProp(client, Prop_Data, "m_iDeaths", g_rank[client]);
+					SetEntProp(client, Prop_Data, "m_iDeaths", g_Rank[client][TIMER_MAIN][0]);
 				}
 			}
 		}
@@ -1573,12 +1512,12 @@ LoadChatRanks()
 	}
 	
 	// init chat ranks
-	g_hChatRanksRanges = CreateArray(2, 1);
-	g_hChatRanksNames  = CreateArray(128, 1);
+	ClearArray(g_hChatRanksRanges);
+	ClearArray(g_hChatRanksNames);
 	
 	// Read file lines and get chat ranks and ranges out of them
 	new String:line[PLATFORM_MAX_PATH], String:oldLine[PLATFORM_MAX_PATH], String:sRange[PLATFORM_MAX_PATH], String:sName[PLATFORM_MAX_PATH], String:expRange[2][128];
-	new idx, iSize = 1;
+	new idx, Range[2];
 	
 	new Handle:hFile = OpenFile(sPath, "r");
 	while(!IsEndOfFile(hFile))
@@ -1593,14 +1532,11 @@ LoadChatRanks()
 				BreakString(line[idx], sName, sizeof(sName));
 				ExplodeString(sRange, "-", expRange, 2, 128);
 				
-				SetArrayCell(g_hChatRanksRanges, iSize-1, StringToInt(expRange[0]), 0);
-				SetArrayCell(g_hChatRanksRanges, iSize-1, StringToInt(expRange[1]), 1);
-				SetArrayString(g_hChatRanksNames, iSize-1, sName);
+				Range[0] = StringToInt(expRange[0]);
+				Range[1] = StringToInt(expRange[1]);
+				PushArrayArray(g_hChatRanksRanges, Range);
 				
-				ResizeArray(g_hChatRanksRanges, iSize+1);
-				ResizeArray(g_hChatRanksNames, iSize+1);
-				
-				iSize++;
+				PushArrayString(g_hChatRanksNames, sName);
 			}
 		}
 		Format(oldLine, sizeof(oldLine), line);
@@ -1619,13 +1555,7 @@ LoadCustomChat()
 public LoadCustomChat_Callback(Handle:owner, Handle:hndl, String:error[], any:data)
 {
 	if(hndl != INVALID_HANDLE)
-	{
-		// Init adt_arrays
-		g_hCustomSteams   = CreateArray(32);
-		g_hCustomNames    = CreateArray(128);
-		g_hCustomMessages = CreateArray(256);
-		g_hCustomUse 	  = CreateArray();
-		
+	{		
 		decl String:sAuth[32], String:sName[128], String:sMsg[256];
 		new rows = SQL_GetRowCount(hndl);
 		
@@ -1649,8 +1579,59 @@ public LoadCustomChat_Callback(Handle:owner, Handle:hndl, String:error[], any:da
 	}
 }
 
+public Native_EnableCustomChat(Handle:plugin, numParams)
+{
+	decl String:sAuth[32];
+	GetNativeString(1, sAuth, sizeof(sAuth));
+	
+	EnableCustomChat(sAuth);
+}
+
+public Native_DisableCustomChat(Handle:plugin, numParams)
+{
+	decl String:sAuth[32];
+	GetNativeString(1, sAuth, sizeof(sAuth));
+	
+	DisableCustomChat(sAuth);
+}
+
+public Native_SteamIDHasCustomChat(Handle:plugin, numParams)
+{
+	decl String:sAuth[32];
+	GetNativeString(1, sAuth, sizeof(sAuth));
+	
+	return FindStringInArray(g_hCustomSteams, sAuth) != -1;
+}
+
 DB_ShowRank(client, target, Type, Style)
 {
+	if(g_Rank[target][Type][Style] != 0)
+	{
+		PrintColorText(client, "%s%s%N%s is ranked %s%d%s of %s%d%s players with %s%.1f%s points.",
+			g_msg_start,
+			g_msg_varcol,
+			target,
+			g_msg_textcol,
+			g_msg_varcol,
+			g_Rank[target][Type][Style],
+			g_msg_textcol,
+			g_msg_varcol,
+			GetArraySize(g_hRanksPlayerID[Type][Style]),
+			g_msg_textcol,
+			g_msg_varcol,
+			GetArrayCell(g_hRanksPoints[Type][Style], g_Rank[target][Type][Style] - 1),
+			g_msg_textcol);
+	}
+	else
+	{
+		PrintColorText(client, "%s%s%N%s is not ranked yet.",
+			g_msg_start,
+			g_msg_varcol,
+			target,
+			g_msg_textcol);
+	}
+	
+	/*
 	new Handle:pack = CreateDataPack();
 	WritePackCell(pack, client);
 	WritePackCell(pack, target);
@@ -1676,6 +1657,7 @@ DB_ShowRank(client, target, Type, Style)
 			PlayerID);
 		
 	SQL_TQuery(g_DB, DB_ShowRank_Callback, query, pack);
+	*/
 }
 
 public DB_ShowRank_Callback(Handle:owner, Handle:hndl, String:error[], any:data)
@@ -1729,6 +1711,7 @@ public DB_ShowRank_Callback(Handle:owner, Handle:hndl, String:error[], any:data)
 	CloseHandle(data);
 }
 
+/*
 DB_ShowTopAll(client)
 {
 	decl String:query[256];
@@ -1765,6 +1748,7 @@ public DB_ShowTopAll_Callback(Handle:owner, Handle:hndl, String:error[], any:dat
 		LogError(error);
 	}
 }
+*/
 
 public Menu_ShowTopAll(Handle:menu, MenuAction:action, param1, param2)
 {
@@ -1773,70 +1757,63 @@ public Menu_ShowTopAll(Handle:menu, MenuAction:action, param1, param2)
 }
 
 DB_ShowTopAllSpec(client, Type, Style)
-{
-	new Handle:pack = CreateDataPack();
-	WritePackCell(pack, client);
-	WritePackCell(pack, Type);
-	WritePackCell(pack, Style);
+{	
+	decl String:sType[32];
+	GetTypeName(Type, sType, sizeof(sType));
+	AddBracketsToString(sType, sizeof(sType));
 	
-	decl String:query[512];
-	Format(query, sizeof(query), "SELECT t1.User, SUM(t2.Points) FROM players AS t1, times AS t2 WHERE t1.PlayerID=t2.PlayerID AND t2.Type=%d AND t2.Style=%d GROUP BY t2.PlayerID ORDER BY SUM(t2.Points) DESC LIMIT 0, 100",
-		Type,
-		Style);
-	SQL_TQuery(g_DB, DB_ShowTopAllSpec_Callback, query, pack);
-}
-
-public DB_ShowTopAllSpec_Callback(Handle:owner, Handle:hndl, String:error[], any:data)
-{
-	if(hndl != INVALID_HANDLE)
+	decl String:sStyle[32];
+	GetStyleName(Style, sStyle, sizeof(sStyle));
+	AddBracketsToString(sStyle, sizeof(sStyle));
+	
+	new iSize = GetArraySize(g_hRanksPlayerID[Type][Style]);
+	if(iSize > 0)
 	{
-		ResetPack(data);
-		new client	= ReadPackCell(data);
-		new Type	= ReadPackCell(data);
-		new Style 	= ReadPackCell(data);
+		new Handle:menu = CreateMenu(Menu_ShowTop);
+		SetMenuTitle(menu, "Top 100 Players %s - %s\n--------------------------------------", sType, sStyle);
 		
-		new Handle:menu   = CreateMenu(Menu_ShowTopAllSpec);
+		decl String:sDisplay[64], String:sInfo[16];
 		
-		decl String:sType[16];
-		GetTypeName(Type, sType, sizeof(sType));
-		Format(sType, sizeof(sType), "%s timer - ", sType);
-		
-		decl String:sStyle[16];
-		GetStyleName(Style, sStyle, sizeof(sStyle));
-		AddBracketsToString(sStyle, sizeof(sStyle));
-		
-		decl String:sTitle[128];
-		Format(sTitle, sizeof(sTitle), "%sTOP 100 %s\n------------------------------------",
-			sType,
-			sStyle);
-		SetMenuTitle(menu, sTitle);
-		
-		new rows = SQL_GetRowCount(hndl), String:sName[MAX_NAME_LENGTH], String:item[128], Float:points;
-		for(new itemnum=1; itemnum<=rows; itemnum++)
+		for(new idx; idx < iSize && idx < 100; idx++)
 		{
-			SQL_FetchRow(hndl);
-			SQL_FetchString(hndl, 0, sName, sizeof(sName));
-			points = SQL_FetchFloat(hndl, 1);
-			FormatEx(item, sizeof(item), "#%d: %s - %6.2f", itemnum, sName, points);
+			GetArrayString(g_hRanksNames[Type][Style], idx, sDisplay, sizeof(sDisplay));
+			Format(sDisplay, sizeof(sDisplay), "#%d: %s (%d Pts.)", idx + 1, sDisplay, RoundToNearest(GetArrayCell(g_hRanksPoints[Type][Style], idx)));
 			
-			if((itemnum % 7 == 0) || (itemnum == rows))
-				Format(item, sizeof(item), "%s\n------------------------------------", item);
-			AddMenuItem(menu, item, item);
+			FormatEx(sInfo, sizeof(sInfo), "%d;%d;%d", GetArrayCell(g_hRanksPlayerID[Type][Style], idx), Type, Style);
+			
+			if(((idx + 1) % 7) == 0 || (idx + 1) == iSize)
+				Format(sDisplay, sizeof(sDisplay), "%s\n--------------------------------------", sDisplay);
+			
+			AddMenuItem(menu, sInfo, sDisplay);
 		}
 		
-		SetMenuExitButton(menu, true);
 		DisplayMenu(menu, client, MENU_TIME_FOREVER);
 	}
 	else
 	{
-		LogError(error);
+		PrintColorText(client, "%s%s%s %s-%s %s %sThere are no ranked players yet.",
+			g_msg_start,
+			g_msg_varcol,
+			sType,
+			g_msg_textcol,
+			g_msg_varcol,
+			sStyle,
+			g_msg_textcol);
 	}
-	CloseHandle(data);
 }
 
-public Menu_ShowTopAllSpec(Handle:menu, MenuAction:action, param1, param2)
+public Menu_ShowTop(Handle:menu, MenuAction:action, param1, param2)
 {
-	if (action == MenuAction_End)
+	if(action == MenuAction_Select)
+	{
+		decl String:sInfo[32];
+		GetMenuItem(menu, param2, sInfo, sizeof(sInfo));
+		
+		decl String:sInfoExploded[3][16];
+		ExplodeString(sInfo, ";", sInfoExploded, sizeof(sInfoExploded), sizeof(sInfoExploded[]));
+		OpenStatsMenu(param1, StringToInt(sInfoExploded[0]), StringToInt(sInfoExploded[1]), StringToInt(sInfoExploded[2]));
+	}
+	if(action == MenuAction_End)
 		CloseHandle(menu);
 }
 
@@ -1845,8 +1822,12 @@ DB_ShowMapsleft(client, target, Type, Style)
 	if(GetPlayerID(target) != 0)
 	{
 		new Handle:pack = CreateDataPack();
-		WritePackCell(pack, client);
-		WritePackCell(pack, target);
+		WritePackCell(pack, GetClientUserId(client));
+		WritePackCell(pack, GetClientUserId(target));
+		
+		decl String:sTarget[MAX_NAME_LENGTH];
+		GetClientName(target, sTarget, sizeof(sTarget));
+		WritePackString(pack, sTarget);
 		WritePackCell(pack, Type);
 		WritePackCell(pack, Style);
 		
@@ -1888,95 +1869,97 @@ public DB_ShowMapsLeft_Callback(Handle:owner, Handle:hndl, String:error[], any:d
 	if(hndl != INVALID_HANDLE)
 	{
 		ResetPack(data);
-		new client	= ReadPackCell(data);
-		new target	= ReadPackCell(data);
+		new clientUserId = ReadPackCell(data);
+		new client       = GetClientOfUserId(clientUserId);
+		new targetUserId = ReadPackCell(data);
+		
+		decl String:sTarget[MAX_NAME_LENGTH];
+		ReadPackString(data, sTarget, sizeof(sTarget));
 		new Type		= ReadPackCell(data);
 		new Style 	= ReadPackCell(data);
 		
-		new rows = SQL_GetRowCount(hndl), count;
-		new String:mapname[128];
-		new Handle:menu = CreateMenu(Menu_ShowMapsleft);
-		
-		decl String:sType[16];
-		if(Type != ALL)
+		if(client != 0)
 		{
-			GetTypeName(Type, sType, sizeof(sType));
-			StringToUpper(sType);
-			AddBracketsToString(sType, sizeof(sType));
-			AddSpaceToEnd(sType, sizeof(sType));
-		}
-		
-		decl String:sStyle[16];
-		if(Style != ALL)
-		{
-			GetStyleName(Style, sStyle, sizeof(sStyle));
+			new rows = SQL_GetRowCount(hndl), count;
+			new String:mapname[128];
+			new Handle:menu = CreateMenu(Menu_ShowMapsleft);
 			
-			Format(sStyle, sizeof(sStyle)," on %s", sStyle);
-		}
-		
-		decl String:title[128];
-		if (rows > 0)
-		{
-			for(new itemnum=1; itemnum<=rows; itemnum++)
+			new String:sType[32];
+			if(Type != ALL)
 			{
-				SQL_FetchRow(hndl);
-				SQL_FetchString(hndl, 0, mapname, sizeof(mapname));
-				if(FindStringInArray(g_MapList, mapname) != -1)
+				GetTypeName(Type, sType, sizeof(sType));
+				StringToUpper(sType);
+				AddBracketsToString(sType, sizeof(sType));
+				AddSpaceToEnd(sType, sizeof(sType));
+			}
+			
+			new String:sStyle[32];
+			if(Style != ALL)
+			{
+				GetStyleName(Style, sStyle, sizeof(sStyle));
+				
+				Format(sStyle, sizeof(sStyle)," on %s", sStyle);
+			}
+			
+			decl String:title[128];
+			if (rows > 0)
+			{
+				for(new itemnum=1; itemnum<=rows; itemnum++)
 				{
-					count++;
-					AddMenuItem(menu, mapname, mapname);
+					SQL_FetchRow(hndl);
+					SQL_FetchString(hndl, 0, mapname, sizeof(mapname));
+					if(FindStringInArray(g_MapList, mapname) != -1)
+					{
+						count++;
+						AddMenuItem(menu, mapname, mapname);
+					}
+				}
+				
+				if(clientUserId == targetUserId)
+				{
+					Format(title, sizeof(title), "%d %sMaps left to complete%s",
+						count,
+						sType,
+						sStyle);
+				}
+				else
+				{
+					Format(title, sizeof(title), "%d %sMaps left to complete%s for player %s",
+						count,
+						sType,
+						sStyle,
+						sTarget);
+				}
+				SetMenuTitle(menu, title);
+			}
+			else
+			{
+				if(clientUserId == targetUserId)
+				{
+					PrintColorText(client, "%s%s%s%sYou have no maps left to beat%s%s.", 
+						g_msg_start,
+						g_msg_varcol,
+						sType,
+						g_msg_textcol,
+						g_msg_varcol,
+						sStyle);
+				}
+				else
+				{
+					PrintColorText(client, "%s%s has no maps left to beat%s.", 
+						g_msg_start,
+						g_msg_varcol,
+						sType,
+						sTarget,
+						g_msg_textcol,
+						g_msg_varcol,
+						sStyle);
 				}
 			}
 			
-			if(client == target)
-			{
-				Format(title, sizeof(title), "%d %sMaps left to complete%s",
-					count,
-					sType,
-					sStyle);
-			}
-			else
-			{
-				decl String:targetName[MAX_NAME_LENGTH];
-				GetClientName(target, targetName, sizeof(targetName));
-				Format(title, sizeof(title), "%d %sMaps left to complete%s for player %s",
-					count,
-					sType,
-					sStyle,
-					targetName);
-			}
-			SetMenuTitle(menu, title);
+			SetMenuExitButton(menu, true);
+			DisplayMenu(menu, client, MENU_TIME_FOREVER);
 		}
-		else
-		{
-			if(client == target)
-			{
-				PrintColorText(client, "%s%s%s%sYou have no maps left to beat%s%s.", 
-					g_msg_start,
-					g_msg_varcol,
-					sType,
-					g_msg_textcol,
-					g_msg_varcol,
-					sStyle);
-			}
-			else
-			{
-				decl String:targetname[MAX_NAME_LENGTH];
-				GetClientName(target, targetname, sizeof(targetname));
-				
-				PrintColorText(client, "%s%s has no maps left to beat%s.", 
-					g_msg_start,
-					g_msg_varcol,
-					sType,
-					targetname,
-					g_msg_textcol,
-					g_msg_varcol,
-					sStyle);
-			}
-		}
-		
-		SetMenuExitButton(menu, true);
-		DisplayMenu(menu, client, MENU_TIME_FOREVER);
 	}
 	else
 	{
@@ -1998,55 +1981,55 @@ public Menu_ShowMapsleft(Handle:menu, MenuAction:action, param1, param2)
 		CloseHandle(menu);
 }
 
-//Maps done
-DB_ShowMapsdone(client, target, Type, Style)
+DB_ShowMapsdone(client, PlayerID, Type, Style)
 {
-	if(GetPlayerID(target) != 0)
+	new Handle:menu = CreateMenu(Menu_ShowMapsdone);
+	
+	decl String:sType[32];
+	GetTypeName(Type, sType, sizeof(sType));
+	
+	decl String:sStyle[32];
+	GetStyleName(Style, sStyle, sizeof(sStyle));
+	
+	decl String:sName[MAX_NAME_LENGTH];
+	GetNameFromPlayerID(PlayerID, sName, sizeof(sName));
+	
+	new Handle:hCell = GetArrayCell(g_hMapsDone[Type][Style], PlayerID);
+	
+	if(hCell != INVALID_HANDLE)
 	{
-		new Handle:pack = CreateDataPack();
-		WritePackCell(pack, client);
-		WritePackCell(pack, target);
-		WritePackCell(pack, Type);
-		WritePackCell(pack, Style);
-	   
-		decl String:query[512];
-		if(Type == ALL && Style == ALL)
-			Format(query, sizeof(query), "SELECT t2.MapName FROM times AS t1, maps AS t2 WHERE t1.MapID=t2.MapID AND t1.PlayerID=%d GROUP BY t1.MapID ORDER BY t2.MapName",
-				GetPlayerID(target));
-		else if(Type != ALL && Style == ALL)
-			Format(query, sizeof(query), "SELECT t2.MapName FROM times AS t1, maps AS t2 WHERE t1.MapID=t2.MapID AND t1.Type=%d AND t1.PlayerID=%d GROUP BY t1.MapID ORDER BY t2.MapName",
-				Type,
-				GetPlayerID(target));
-		else if(Type != ALL && Style != ALL)
-			Format(query, sizeof(query), "SELECT t2.MapName FROM times AS t1, maps AS t2 WHERE t1.MapID=t2.MapID AND t1.Type=%d AND t1.Style=%d AND t1.PlayerID=%d GROUP BY t1.MapID ORDER BY t2.MapName",
-				Type,
-				Style,
-				GetPlayerID(target));
-		SQL_TQuery(g_DB, DB_ShowMapsdone_Callback, query, pack);
+		new iSize = GetArraySize(hCell);
+		decl String:sMapName[64], String:sTime[32], String:sDisplay[128];
+		for(new idx; idx < iSize; idx++)
+		{
+			GetMapNameFromMapId(GetArrayCell(hCell, idx, 0), sMapName, sizeof(sMapName));
+			new Position   = GetArrayCell(hCell, idx, 1);
+			new Float:Time = GetArrayCell(hCell, idx, 2);
+			FormatPlayerTime(Time, sTime, sizeof(sTime), false, 1);
+			
+			FormatEx(sDisplay, sizeof(sDisplay), "%s: %s (#%d)", sMapName, sTime, Position);
+			
+			if(((idx + 1) % 7) == 0 || (idx + 1) == iSize)
+				Format(sDisplay, sizeof(sDisplay), "%s\n--------------------------------------", sDisplay);
+			
+			AddMenuItem(menu, "", sDisplay);
+		}
+		
+		SetMenuTitle(menu, "Maps done for %s [%s] - [%s]\n \nCompleted %d / %d\n-----------------------------------", sName, sType, sStyle, iSize, GetTotalZonesAllMaps((Type == TIMER_MAIN)?MAIN_START:BONUS_START));
+		
+		DisplayMenu(menu, client, MENU_TIME_FOREVER);
 	}
 	else
 	{
-		if(client == target)
-		{
-			PrintColorText(client, "%s%sYour SteamID is not authorized. Steam servers may be down. If not, try reconnecting.",
-				g_msg_start,
-				g_msg_textcol);
-		}
-		else
-		{
-			decl String:name[MAX_NAME_LENGTH];
-			GetClientName(target, name, sizeof(name));
-			
-			PrintColorText(client, "%s%s%s's %sSteamID is not authorized. Steam servers may be down.", 
-				g_msg_start,
-				g_msg_varcol,
-				name,
-				g_msg_textcol);
-		}
+		PrintColorText(client, "%s%s%s %shas no maps done.",
+			g_msg_start,
+			g_msg_varcol,
+			sName,
+			g_msg_textcol);
 	}
 }
  
-public DB_ShowMapsdone_Callback(Handle:owner, Handle:hndl, String:error[], any:data)
+public Menu_ShowMapsdone_Callback(Handle:owner, Handle:hndl, String:error[], any:data)
 {
 	if(hndl != INVALID_HANDLE)
 	{
@@ -2058,7 +2041,7 @@ public DB_ShowMapsdone_Callback(Handle:owner, Handle:hndl, String:error[], any:d
 	   
 		new rows = SQL_GetRowCount(hndl);
 		
-		new String:sType[16];
+		new String:sType[32];
 		if(Type != ALL)
 		{
 			GetTypeName(Type, sType, sizeof(sType));
@@ -2067,7 +2050,7 @@ public DB_ShowMapsdone_Callback(Handle:owner, Handle:hndl, String:error[], any:d
 			AddSpaceToEnd(sType, sizeof(sType));
 		}
 		
-		new String:sStyle[16];
+		new String:sStyle[32];
 		if(Style != ALL)
 		{
 			GetStyleName(Style, sStyle, sizeof(sStyle));
@@ -2160,8 +2143,38 @@ public Menu_ShowMapsdone(Handle:menu, MenuAction:action, param1, param2)
 		
 		FakeClientCommand(param1, "sm_nominate %s", info);
 	}
-	else if (action == MenuAction_End)
+	else if(action == MenuAction_End)
 		CloseHandle(menu);
+}
+
+public OnTimesUpdated(const String:sMapName[], Type, Style, Handle:Times)
+{
+	// Formula: (#Times - MapRank) * AverageTime / 10
+	
+	new Size = GetArraySize(Times);
+	
+	new Float:fTimeSum;
+	for(new idx; idx < Size; idx++)
+		fTimeSum += Float:GetArrayCell(Times, idx, 1);
+	
+	new Float:fAverage = fTimeSum / float(Size);
+	
+	new QuerySize = 200 + (50 * Size);
+	decl String:query[QuerySize];
+	FormatEx(query, QuerySize, "UPDATE times SET Points = CASE PlayerID ");
+	
+	for(new idx; idx < Size; idx++)
+		Format(query, QuerySize, "%sWHEN %d THEN %f ", query, GetArrayCell(Times, idx), (float(Size) - float(idx)) * fAverage / 10.0);
+	
+	Format(query, QuerySize, "%sEND WHERE MapID = (SELECT MapID FROM maps WHERE MapName='%s') AND Type=%d AND Style=%d", query, sMapName, Type, Style);
+	
+	SQL_TQuery(g_DB, TimesUpdated_Callback, query);
+}
+
+public TimesUpdated_Callback(Handle:owner, Handle:hndl, String:error[], any:data)
+{
+	if(hndl == INVALID_HANDLE)
+		LogError(error);
 }
 
 UpdateRanks(const String:sMapName[], Type, Style, bool:recalc = false)
@@ -2186,11 +2199,11 @@ UpdateRanks(const String:sMapName[], Type, Style, bool:recalc = false)
 	
 	SQL_TQuery(g_DB, DB_UpdateRanks_Callback, query, pack);
 	
-	if(recalc == false)
-	{
-		for(new client=1; client <= MaxClients; client++)
-			DB_SetClientRank(client);
-	}
+	//if(recalc == false)
+	//{
+	//	for(new client=1; client <= MaxClients; client++)
+	//		DB_SetClientRank(client);
+	//}
 }
 
 public Native_UpdateRanks(Handle:plugin, numParams)
@@ -2243,10 +2256,6 @@ public DB_UpdateRanks_Callback(Handle:owner, Handle:hndl, String:error[], any:pa
 				}
 			}
 		}
-		else
-		{
-			LogMessage("Ranks updated.");
-		}
 	}
 	else
 	{
@@ -2256,111 +2265,330 @@ public DB_UpdateRanks_Callback(Handle:owner, Handle:hndl, String:error[], any:pa
 	CloseHandle(pack);
 }
 
-DB_SetClientRank(client)
+SetClientRank(client)
 {
-	if(GetPlayerID(client) != 0 && IsClientConnected(client))
-	{
-		if(!IsFakeClient(client))
+	new PlayerID = GetPlayerID(client);
+	if(PlayerID != 0 && IsClientConnected(client) && !IsFakeClient(client))
+	{		
+		for(new Type; Type < MAX_TYPES; Type++)
 		{
-			decl String:query[512];
-			Format(query, sizeof(query), "SELECT count(*) AS Rank FROM (SELECT SUM(Points) AS Points FROM times GROUP BY PlayerID ORDER BY SUM(Points)) AS t1 WHERE Points>=(SELECT SUM(Points) FROM times WHERE PlayerID=%d)", 
-				GetPlayerID(client));
-			SQL_TQuery(g_DB, DB_SetClientRank_Callback, query, client);
-		}
-	}
-}
-
-public DB_SetClientRank_Callback(Handle:owner, Handle:hndl, String:error[], any:client)
-{
-	if(hndl != INVALID_HANDLE)
-	{
-		if(IsClientConnected(client))
-		{
-			if(!IsFakeClient(client))
+			for(new Style; Style < MAX_STYLES; Style++)
 			{
-				SQL_FetchRow(hndl);
-				g_rank[client] = SQL_FetchInt(hndl, 0);
+				if(Style_IsEnabled(Style) && Style_IsTypeAllowed(Style, Type))
+				{
+					g_Rank[client][Type][Style] = FindValueInArray(g_hRanksPlayerID[Type][Style], PlayerID) + 1;
+				}
 			}
 		}
 	}
-	else
-	{
-		LogError(error);
-	}
 }
 
-DB_ShowPlaytime(client, target)
+public PlayerManager_OnThinkPost(entity)
 {
-	new Handle:pack = CreateDataPack();
-	WritePackCell(pack, client);
-	WritePackCell(pack, target);
+	new m_iMVPs[MaxClients + 1];
+	//GetEntDataArray(entity, g_iMVPs_offset, m_iMVPs, MaxClients);
+
+	for(new client = 1; client <= MaxClients; client++)
+	{
+		if(IsClientInGame(client) && !IsFakeClient(client) && GetPlayerID(client) != 0)
+		{
+			m_iMVPs[client] = g_RecordCount[client];
+		}
+	}
 	
-	decl String:query[512];
-	Format(query, sizeof(query), "SELECT (SELECT Playtime FROM players WHERE PlayerID=%d) AS TargetPlaytime, User, Playtime FROM players ORDER BY Playtime DESC LIMIT 0, 100",
-		GetPlayerID(target));
-	SQL_TQuery(g_DB, DB_ShowPlaytime_Callback, query, pack);
+	SetEntDataArray(entity, g_iMVPs_offset, m_iMVPs, MaxClients + 1);
 }
 
-public DB_ShowPlaytime_Callback(Handle:owner, Handle:hndl, String:error[], any:data)
+SetRecordCount(client)
+{
+	new idx = FindValueInArray(g_hRecordListID[TIMER_MAIN][0], GetPlayerID(client));
+	
+	if(idx != -1)
+	{
+		g_RecordCount[client] = GetArrayCell(g_hRecordListCount[TIMER_MAIN][0], idx);
+	}
+}
+
+DB_LoadStats()
+{
+	#if defined DEBUG
+		LogMessage("Loading stats (Getting max PlayerID)");
+	#endif
+	
+	decl String:query[128];
+	FormatEx(query, sizeof(query), "SELECT MAX(PlayerID) FROM times");
+	SQL_TQuery(g_DB, LoadStats_Callback, query);
+}
+
+public LoadStats_Callback(Handle:owner, Handle:hndl, String:error[], any:data)
 {
 	if(hndl != INVALID_HANDLE)
 	{
-		ResetPack(data);
-		new client = ReadPackCell(data);
-		new target = ReadPackCell(data);
+		#if defined DEBUG
+			LogMessage("Loading stats (Selecting all times)");
+		#endif
 		
-		new rows = SQL_GetRowCount(hndl);
-		if(rows != 0)
+		if(SQL_GetRowCount(hndl) != 0)
 		{
-			new Handle:menu = CreateMenu(Menu_ShowPlaytime);
-		
-			decl String:name[MAX_NAME_LENGTH], String:timeformatted[32], time, TargetPlaytime;
-				
-			decl String:item[64];
-			for(new i=1; i<=rows; i++)
-			{
-				SQL_FetchRow(hndl);
-				
-				TargetPlaytime = SQL_FetchInt(hndl, 0);
-				SQL_FetchString(hndl, 1, name, sizeof(name));
-				time = SQL_FetchInt(hndl, 2);
-				
-				FormatPlayerTime(float(time), timeformatted, sizeof(timeformatted), false, 1);
-				SplitString(timeformatted, ".", timeformatted, sizeof(timeformatted));
-				
-				Format(item, sizeof(item), "#%d: %s: %s", i, name, timeformatted);
-				
-				if(i%7 == 0)
-					Format(item, sizeof(item), "%s\n--------------------------------------", item);
-				else if(i == rows)
-					Format(item, sizeof(item), "%s\n--------------------------------------", item);
-				
-				AddMenuItem(menu, item, item);
-			}
+			SQL_FetchRow(hndl);
 			
-			GetClientName(target, name, sizeof(name));
-			FormatPlayerTime(GetPlaytime(target)+float(TargetPlaytime), timeformatted, sizeof(timeformatted), false, 1);
-			SplitString(timeformatted, ".", timeformatted, sizeof(timeformatted));
+			new Handle:pack = CreateDataPack();
+			WritePackCell(pack, SQL_FetchInt(hndl, 0));
 			
-			SetMenuTitle(menu, "Playtimes\n \n%s: %s\n--------------------------------------",
-				name,
-				timeformatted);
-			
-			SetMenuExitButton(menu, true);
-			DisplayMenu(menu, client, MENU_TIME_FOREVER);
+			decl String:query[256];
+			FormatEx(query, sizeof(query), "SELECT t1.MapID, t1.Type, t1.Style, t1.PlayerID, t1.Time, t1.Points FROM times AS t1, maps AS t2 WHERE t1.MapID=t2.MapID ORDER BY t2.MapName, t1.Type, t1.Style, t1.Time");
+			SQL_TQuery(g_DB, LoadStats_Callback2, query, pack);
 		}
 	}
 	else
 	{
 		LogError(error);
 	}
+}
+
+public LoadStats_Callback2(Handle:owner, Handle:hndl, String:error[], any:data)
+{
+	if(hndl != INVALID_HANDLE)
+	{
+		#if defined DEBUG
+			LogMessage("Stats retrieved, importing to adt_array");
+		#endif
+		
+		ResetPack(data);
+		new MaxPlayerID = ReadPackCell(data);
+		
+		new iSize, idx;
+		for(new Type; Type < MAX_TYPES; Type++)
+		{
+			for(new Style; Style < MAX_STYLES; Style++)
+			{
+				if(Style_IsEnabled(Style) && Style_IsTypeAllowed(Style, Type))
+				{
+					// Close old handles
+					iSize = GetArraySize(g_hMapsDoneHndlRef[Type][Style]);
+					for(new i; i < iSize; i++)
+					{
+						idx = GetArrayCell(g_hMapsDoneHndlRef[Type][Style], 0);
+						RemoveFromArray(g_hMapsDoneHndlRef[Type][Style], 0);
+						CloseHandle(GetArrayCell(g_hMapsDone[Type][Style], idx));
+					}
+					
+					ClearArray(g_hMapsDone[Type][Style]);
+					ResizeArray(g_hMapsDone[Type][Style], MaxPlayerID + 1);
+					
+					for(new i; i < MaxPlayerID + 1; i++)
+					{
+						SetArrayCell(g_hMapsDone[Type][Style], i, 0);
+					}
+					
+					ClearArray(g_hRecordListID[Type][Style]);
+					ClearArray(g_hRecordListCount[Type][Style]);
+				}
+			}
+		}
+		
+		new Position;
+		new lMapID, lType, lStyle;
+		new MapID, Type, Style, PlayerID, Float:Time;
+		decl String:sMapName[64];
+		
+		while(SQL_FetchRow(hndl))
+		{
+			MapID    = SQL_FetchInt(hndl, 0);
+			Type     = SQL_FetchInt(hndl, 1);
+			Style    = SQL_FetchInt(hndl, 2);
+			PlayerID = SQL_FetchInt(hndl, 3);
+			Time     = SQL_FetchFloat(hndl, 4);
+			
+			if(lMapID != MapID || lType != Type || lStyle != Style)
+				Position = 0;
+			Position++;
+			
+			if(!(Style_IsEnabled(Style) && Style_IsTypeAllowed(Style, Type)))
+				continue;
+			
+			GetMapNameFromMapId(MapID, sMapName, sizeof(sMapName));
+			
+			if(FindStringInArray(g_MapList, sMapName) == -1)
+				continue;
+			
+			if(Position == 1)
+			{
+				AddToRecordList(PlayerID, Type, Style);
+			}
+			
+			if(GetArrayCell(g_hMapsDone[Type][Style], PlayerID) == INVALID_HANDLE)
+			{
+				new Handle:hCell = CreateArray(3);
+				SetArrayCell(g_hMapsDone[Type][Style], PlayerID, hCell);
+				
+				PushArrayCell(g_hMapsDoneHndlRef[Type][Style], PlayerID);
+			}
+			
+			new Handle:hCell = GetArrayCell(g_hMapsDone[Type][Style], PlayerID);
+			
+			iSize = GetArraySize(hCell);
+			ResizeArray(hCell, iSize + 1);
+			
+			SetArrayCell(hCell, iSize, MapID, 0);
+			SetArrayCell(hCell, iSize, Position, 1);
+			SetArrayCell(hCell, iSize, Time, 2);
+			
+			lMapID = MapID;
+			lType  = Type;
+			lStyle = Style;
+		}
+		
+		for(new client = 1; client <= MaxClients; client++)
+		{
+			if(GetPlayerID(client) != 0)
+			{
+				SetRecordCount(client);
+			}
+		}
+		
+		DB_LoadRankList();
+	}
+	else
+	{
+		LogError(error);
+	}
+	
 	CloseHandle(data);
 }
 
-public Menu_ShowPlaytime(Handle:menu, MenuAction:action, param1, param2)
+AddToRecordList(PlayerID, Type, Style)
 {
-	if (action == MenuAction_End)
-		CloseHandle(menu);
+	new idx = FindValueInArray(g_hRecordListID[Type][Style], PlayerID);
+	
+	new RecordCount;
+	
+	if(idx == -1)
+	{
+		RecordCount = 1;
+		
+		new iSize = GetArraySize(g_hRecordListID[Type][Style]);
+		
+		ResizeArray(g_hRecordListID[Type][Style], iSize + 1);
+		ResizeArray(g_hRecordListCount[Type][Style], iSize + 1);
+		
+		SetArrayCell(g_hRecordListID[Type][Style], iSize, PlayerID);
+		SetArrayCell(g_hRecordListCount[Type][Style], iSize, RecordCount);
+	}
+	else
+	{
+		RecordCount = GetArrayCell(g_hRecordListCount[Type][Style], idx) + 1;
+		RemoveFromArray(g_hRecordListID[Type][Style], idx);
+		RemoveFromArray(g_hRecordListCount[Type][Style], idx);
+		
+		new iSize = GetArraySize(g_hRecordListID[Type][Style]);
+		
+		for(new i; i < iSize; i++)
+		{
+			if(RecordCount > GetArrayCell(g_hRecordListCount[Type][Style], i))
+			{
+				ShiftArrayUp(g_hRecordListID[Type][Style], i);
+				ShiftArrayUp(g_hRecordListCount[Type][Style], i);
+				
+				SetArrayCell(g_hRecordListID[Type][Style], i, PlayerID);
+				SetArrayCell(g_hRecordListCount[Type][Style], i, RecordCount);
+				
+				break;
+			}
+		}
+	}
+}
+
+DB_LoadRankList()
+{	
+	#if defined DEBUG
+		LogMessage("Selecting rank list");
+	#endif
+	
+	// Load ranks only for maps on the server
+	new iSize = GetArraySize(g_MapList);
+	new QuerySize = 220 + (iSize * 128);
+	decl String:query[QuerySize];
+	FormatEx(query, QuerySize, "SELECT t2.User, t1.PlayerID, SUM(t1.Points), t1.Type, t1.Style FROM times AS t1, players AS t2 WHERE t1.PlayerID=t2.PlayerID AND (");
+	
+	decl String:sMapName[64];
+	for(new idx; idx < iSize; idx++)
+	{
+		GetArrayString(g_MapList, idx, sMapName, sizeof(sMapName));
+		
+		Format(query, QuerySize, "%st1.MapID = (SELECT MapID FROM maps WHERE MapName='%s' LIMIT 0, 1)", query, sMapName);
+		
+		if(idx < iSize - 1)
+		{
+			Format(query, QuerySize, "%s OR ", query);
+		}
+	}
+	
+	Format(query, QuerySize, "%s) GROUP BY t1.PlayerID, t1.Type, t1.Style ORDER BY t1.Type, t1.Style, SUM(t1.Points) DESC", query);
+	
+	SQL_TQuery(g_DB, LoadRankList_Callback, query);
+}
+
+public LoadRankList_Callback(Handle:owner, Handle:hndl, const String:error[], any:data)
+{
+	if(hndl != INVALID_HANDLE)
+	{
+		#if defined DEBUG
+			PrintToServer("Rank list selected, loading into adt_array");
+		#endif
+		
+		for(new Type; Type < MAX_TYPES; Type++)
+		{
+			for(new Style; Style < MAX_STYLES; Style++)
+			{
+				if(Style_IsEnabled(Style) && Style_IsTypeAllowed(Style, Type))
+				{
+					ClearArray(g_hRanksPlayerID[Type][Style]);
+					ClearArray(g_hRanksPoints[Type][Style]);
+					ClearArray(g_hRanksNames[Type][Style]);
+				}
+			}
+		}
+		
+		new String:sName[MAX_NAME_LENGTH], PlayerID, Float:Points, Type, Style, iSize;
+		
+		while(SQL_FetchRow(hndl))
+		{
+			SQL_FetchString(hndl, 0, sName, sizeof(sName));
+			PlayerID = SQL_FetchInt(hndl, 1);
+			Points   = SQL_FetchFloat(hndl, 2);
+			Type     = SQL_FetchInt(hndl, 3);
+			Style    = SQL_FetchInt(hndl, 4);
+			
+			if(!(Style_IsEnabled(Style) && Style_IsTypeAllowed(Style, Type)))
+				continue;
+			
+			iSize = GetArraySize(g_hRanksPlayerID[Type][Style]);
+			
+			ResizeArray(g_hRanksNames[Type][Style], iSize + 1);
+			SetArrayString(g_hRanksNames[Type][Style], iSize, sName);
+			
+			ResizeArray(g_hRanksPlayerID[Type][Style], iSize + 1);
+			SetArrayCell(g_hRanksPlayerID[Type][Style], iSize, PlayerID);
+			
+			ResizeArray(g_hRanksPoints[Type][Style], iSize + 1);
+			SetArrayCell(g_hRanksPoints[Type][Style], iSize, Points);
+		}
+		
+		for(new client = 1; client <= MaxClients; client++)
+		{
+			if(GetPlayerID(client) != 0)
+			{
+				SetClientRank(client);
+			}
+		}
+		
+		g_bStatsLoaded = true;
+	}
+	else
+	{
+		LogError(error);
+	}
 }
 
 DB_Connect()

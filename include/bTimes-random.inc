@@ -12,6 +12,8 @@
 #define KH_RECORD		1<<11
 #define KH_BEST		1<<12
 #define KH_SPECS		1<<13
+#define STOP_PBSND     1<<14
+#define STOP_FAILSND   1<<15
 
 native GetClientSettings(client);
 native SetClientSettings(client, settings);

@@ -4,7 +4,7 @@
 
 public Plugin:myinfo = 
 {
-	name = "[bTimes] cp",
+	name = "[bTimes] Checkpoints",
 	author = "blacky",
 	description = "Checkpoints plugin for the timer",
 	version = VERSION,
@@ -15,13 +15,23 @@ public Plugin:myinfo =
 #include <sourcemod>
 #include <bTimes-timer>
 #include <bTimes-random>
+#include <bTimes-zones>
+#include <smlib/entities>
 
-new Float:g_cp[MAXPLAYERS+1][10][3][3];
-new g_cpcount[MAXPLAYERS+1];
+enum
+{
+	GameType_CSS,
+	GameType_CSGO
+};
 
-new bool:g_UsePos[MAXPLAYERS+1] = {true, ...};
-new bool:g_UseVel[MAXPLAYERS+1] = {false, ...};
-new bool:g_UseAng[MAXPLAYERS+1] = {false, ...};
+new	g_GameType;
+
+new 	Float:g_cp[MAXPLAYERS+1][10][3][3];
+new	g_cpcount[MAXPLAYERS+1];
+
+new	bool:g_UsePos[MAXPLAYERS+1] = {true, ...};
+new	bool:g_UseVel[MAXPLAYERS+1] = {false, ...};
+new	bool:g_UseAng[MAXPLAYERS+1] = {false, ...};
 
 new 	g_LastUsed[MAXPLAYERS+1],
 	bool:g_HasLastUsed[MAXPLAYERS+1];
@@ -34,9 +44,28 @@ new 	bool:g_BlockTpTo[MAXPLAYERS+1][MAXPLAYERS+1];
 new	String:g_msg_start[128],
 	String:g_msg_varcol[128],
 	String:g_msg_textcol[128];
+	
+// Cvars
+new	Handle:g_hAllowCp;
 
 public OnPluginStart()
 {
+	decl String:sGame[64];
+	GetGameFolderName(sGame, sizeof(sGame));
+	
+	if(StrEqual(sGame, "cstrike"))
+		g_GameType = GameType_CSS;
+	else if(StrEqual(sGame, "csgo"))
+		g_GameType = GameType_CSGO;
+	else
+		SetFailState("This timer does not support this game (%s)", sGame);
+	
+	// Cvars
+	g_hAllowCp = CreateConVar("timer_allowcp", "1", "Allows players to use the checkpoint plugin's features.", 0, true, 0.0, true, 1.0);
+	
+	AutoExecConfig(true, "cp", "timer");
+	
+	// Commands
 	RegConsoleCmdEx("sm_cp", SM_CP, "Opens the checkpoint menu.");
 	RegConsoleCmdEx("sm_checkpoint", SM_CP, "Opens the checkpoint menu.");
 	RegConsoleCmdEx("sm_tele", SM_Tele, "Teleports you to the specified checkpoint.");
@@ -60,82 +89,105 @@ public OnClientPutInServer(client)
 
 public OnTimerChatChanged(MessageType, String:Message[])
 {
-	if(MessageType == 0) // msg start
+	if(MessageType == 0)
 	{
 		Format(g_msg_start, sizeof(g_msg_start), Message);
-		ReplaceString(g_msg_start, sizeof(g_msg_start), "^", "\x07", false);
+		ReplaceMessage(g_msg_start, sizeof(g_msg_start));
 	}
-	else if(MessageType == 1) // variable color
+	else if(MessageType == 1)
 	{
 		Format(g_msg_varcol, sizeof(g_msg_varcol), Message);
-		ReplaceString(g_msg_varcol, sizeof(g_msg_varcol), "^", "\x07", false);
+		ReplaceMessage(g_msg_varcol, sizeof(g_msg_varcol));
 	}
-	else if(MessageType == 2) // text color
+	else if(MessageType == 2)
 	{
 		Format(g_msg_textcol, sizeof(g_msg_textcol), Message);
-		ReplaceString(g_msg_textcol, sizeof(g_msg_textcol), "^", "\x07", false);
+		ReplaceMessage(g_msg_textcol, sizeof(g_msg_textcol));
+	}
+}
+
+ReplaceMessage(String:message[], maxlength)
+{
+	if(g_GameType == GameType_CSS)
+	{
+		ReplaceString(message, maxlength, "^", "\x07", false);
+	}
+	else if(g_GameType == GameType_CSGO)
+	{
+		ReplaceString(message, maxlength, "^A", "\x0A");
+		ReplaceString(message, maxlength, "^1", "\x01");
+		ReplaceString(message, maxlength, "^2", "\x02");
+		ReplaceString(message, maxlength, "^3", "\x03");
+		ReplaceString(message, maxlength, "^4", "\x04");
+		ReplaceString(message, maxlength, "^5", "\x05");
+		ReplaceString(message, maxlength, "^6", "\x06");
+		ReplaceString(message, maxlength, "^7", "\x07");
 	}
 }
 
 public Action:SM_TpTo(client, args)
 {
-	if(IsPlayerAlive(client))
+	if(GetConVarBool(g_hAllowCp))
 	{
-		if(args == 0)
+		if(IsPlayerAlive(client))
 		{
-			OpenTpToMenu(client);
-		}
-		else
-		{
-			decl String:argString[250];
-			GetCmdArgString(argString, sizeof(argString));
-			new target = FindTarget(client, argString, false, false);
-			
-			if(client != target)
+			if(args == 0)
 			{
-				if(target != -1)
+				OpenTpToMenu(client);
+			}
+			else
+			{
+				decl String:argString[250];
+				GetCmdArgString(argString, sizeof(argString));
+				new target = FindTarget(client, argString, false, false);
+				
+				if(client != target)
 				{
-					if(IsPlayerAlive(target))
+					if(target != -1)
 					{
-						if(IsFakeClient(target))
+						if(IsPlayerAlive(target))
 						{
-							new Float:pos[3];
-							GetEntPropVector(target, Prop_Send, "m_vecOrigin", pos);
-							
-							StopTimer(client);
-							TeleportEntity(client, pos, NULL_VECTOR, NULL_VECTOR);
+							if(IsFakeClient(target))
+							{
+								new Float:pos[3];
+								GetEntPropVector(target, Prop_Send, "m_vecOrigin", pos);
+								
+								StopTimer(client);
+								TeleportEntity(client, pos, NULL_VECTOR, NULL_VECTOR);
+							}
+							else
+							{
+								SendTpToRequest(client, target);
+							}
 						}
 						else
 						{
-							SendTpToRequest(client, target);
+							PrintColorText(client, "%s%sTarget not alive.",
+								g_msg_start,
+								g_msg_textcol);
 						}
 					}
 					else
 					{
-						PrintColorText(client, "%s%sTarget not alive.",
-							g_msg_start,
-							g_msg_textcol);
+						OpenTpToMenu(client);
 					}
 				}
 				else
 				{
-					OpenTpToMenu(client);
+					PrintColorText(client, "%s%sYou can't target yourself.",
+						g_msg_start,
+						g_msg_textcol);
 				}
 			}
-			else
-			{
-				PrintColorText(client, "%s%sYou can't target yourself.",
-					g_msg_start,
-					g_msg_textcol);
-			}
+		}
+		else
+		{
+			PrintColorText(client, "%s%sYou must be alive to use the sm_tpto command.",
+				g_msg_start,
+				g_msg_textcol);
 		}
 	}
-	else
-	{
-		PrintColorText(client, "%s%sYou must be alive to use the sm_tpto command.",
-			g_msg_start,
-			g_msg_textcol);
-	}
+	
 	return Plugin_Handled;
 }
 
@@ -144,17 +196,14 @@ OpenTpToMenu(client)
 	new Handle:menu = CreateMenu(Menu_Tpto);
 	SetMenuTitle(menu, "Select player to teleport to");
 
-	decl String:itargetname[MAX_NAME_LENGTH], String:index[8];
-	for(new itarget=1; itarget <= MaxClients; itarget++)
+	decl String:sTarget[MAX_NAME_LENGTH], String:sInfo[8];
+	for(new target = 1; target <= MaxClients; target++)
 	{
-		if(itarget != client && IsClientInGame(itarget))
+		if(target != client && IsClientInGame(target))
 		{
-			if(IsPlayerAlive(itarget))
-			{
-				GetClientName(itarget, itargetname, sizeof(itargetname));
-				IntToString(itarget, index, sizeof(index));
-				AddMenuItem(menu, index, itargetname);
-			}
+			GetClientName(target, sTarget, sizeof(sTarget));
+			IntToString(GetClientUserId(target), sInfo, sizeof(sInfo));
+			AddMenuItem(menu, sInfo, sTarget);
 		}
 	}
 
@@ -163,59 +212,35 @@ OpenTpToMenu(client)
 	DisplayMenu(menu, client, MENU_TIME_FOREVER);
 }
 
-public Menu_Tpto(Handle:menu, MenuAction:action, param1, param2)
+public Menu_Tpto(Handle:menu, MenuAction:action, client, param2)
 {
-	if (action == MenuAction_Select)
+	if(action == MenuAction_Select)
 	{
 		new String:info[32];
 		GetMenuItem(menu, param2, info, sizeof(info));
 		
-		new selection = StringToInt(info);
-		for(new target=1; target <= MaxClients; target++)
+		new target = GetClientOfUserId(StringToInt(info));
+		if(target != 0)
 		{
-			if(target == selection)
+			if(IsFakeClient(target))
 			{
-				if(IsClientInGame(target))
-				{
-					if(IsPlayerAlive(target))
-					{
-						if(IsPlayerAlive(param1))
-						{
-							if(IsFakeClient(target))
-							{
-								new Float:pos[3];
-								GetEntPropVector(target, Prop_Send, "m_vecOrigin", pos);
-								
-								StopTimer(param1);
-								TeleportEntity(param1, pos, NULL_VECTOR, NULL_VECTOR);
-							}
-							else
-							{
-								SendTpToRequest(param1, target);
-							}
-						}
-						else
-						{
-							PrintColorText(param1, "%s%sYou must be alive to use the sm_tpto command.",
-								g_msg_start,
-								g_msg_textcol);
-						}
-					}
-					else
-					{
-						PrintColorText(param1, "%s%sTarget not alive.",
-							g_msg_start,
-							g_msg_textcol);
-					}
-				}
-				else
-				{
-					PrintColorText(param1, "%s%sTarget not in game.",
-						g_msg_start,
-						g_msg_textcol);
-				}
+				new Float:vPos[3];
+				Entity_GetAbsOrigin(target, vPos);
+				
+				StopTimer(client);
+				TeleportEntity(client, vPos, NULL_VECTOR, NULL_VECTOR);
 			}
-		}	
+			else
+			{
+				SendTpToRequest(client, target);
+			}
+		}
+		else
+		{
+			PrintColorText(client, "%s%sTarget not in game.",
+				g_msg_start,
+				g_msg_textcol);
+		}
 	}
 	else if (action == MenuAction_End)
 		CloseHandle(menu);
@@ -227,96 +252,96 @@ SendTpToRequest(client, target)
 	{
 		new Handle:menu = CreateMenu(Menu_TpRequest);
 		
-		decl String:sClient[8], String:sInfo[10], String:sClientName[MAX_NAME_LENGTH];
-		IntToString(client, sClient, sizeof(sClient));
-		GetClientName(client, sClientName, sizeof(sClientName));
+		decl String:sInfo[16];
+		new UserId = GetClientUserId(client);
 		
-		SetMenuTitle(menu, "%s wants to teleport to you", sClientName);
+		SetMenuTitle(menu, "%N wants to teleport to you", client);
 		
-		Format(sInfo, sizeof(sInfo), "%saccept", sClient);
+		Format(sInfo, sizeof(sInfo), "%d;a", UserId);
 		AddMenuItem(menu, sInfo, "Accept");
 		
-		Format(sInfo, sizeof(sInfo), "%sdeny", sClient);
+		Format(sInfo, sizeof(sInfo), "%d;d", UserId);
 		AddMenuItem(menu, sInfo, "Deny");
 		
-		Format(sInfo, sizeof(sInfo), "%sblock", sClient);
+		Format(sInfo, sizeof(sInfo), "%d;b", UserId);
 		AddMenuItem(menu, sInfo, "Deny & Block");
 		
 		DisplayMenu(menu, target, 20);
 	}
 	else
 	{
-		decl String:sTargetName[MAX_NAME_LENGTH];
-		GetClientName(target, sTargetName, sizeof(sTargetName));
-		
-		PrintColorText(client, "%s%s %s %sblocked all tpto requests from you.",
+		PrintColorText(client, "%s%s%N %sblocked all tpto requests from you.",
 			g_msg_start,
 			g_msg_varcol,
-			sTargetName,
+			target,
 			g_msg_textcol);
 	}
 }
 
 public Menu_TpRequest(Handle:menu, MenuAction:action, param1, param2)
 {
-	if (action == MenuAction_Select)
+	if(action == MenuAction_Select)
 	{
-		decl String:info[32], String:sTarget[MAX_NAME_LENGTH];
+		decl String:info[32];
 		GetMenuItem(menu, param2, info, sizeof(info));
-		GetClientName(param1, sTarget, sizeof(sTarget));
 		
-		new client;
-		if(StrContains(info, "accept") != -1) // accept
+		decl String:sInfoExploded[2][16];
+		ExplodeString(info, ";", sInfoExploded, 2, 16);
+		
+		new client = GetClientOfUserId(StringToInt(sInfoExploded[0]));
+		
+		if(client != 0)
 		{
-			SplitString(info, "accept", info, sizeof(info));
-			client = StringToInt(info);
-			
-			if(IsClientInGame(client) && IsClientInGame(param1))
+			if(sInfoExploded[1][0] == 'a') // accept
 			{
-				new Float:pos[3];
-				GetEntPropVector(param1, Prop_Send, "m_vecOrigin", pos);
+				new Float:vPos[3];
+				Entity_GetAbsOrigin(param1, vPos);
 				
 				StopTimer(client);
-				TeleportEntity(client, pos, NULL_VECTOR, NULL_VECTOR);
+				TeleportEntity(client, vPos, NULL_VECTOR, NULL_VECTOR);
 				
-				PrintColorText(client, "%s%s%s %saccepted your request.",
+				PrintColorText(client, "%s%s%N %saccepted your request.",
 					g_msg_start,
 					g_msg_varcol,
-					sTarget,
+					param1,
+					g_msg_textcol);
+			}
+			else if(sInfoExploded[1][0] == 'd') // deny
+			{
+				PrintColorText(client, "%s%s%N %sdenied your request.",
+					g_msg_start,
+					g_msg_varcol,
+					param1,
+					g_msg_textcol);
+			}
+			else if(sInfoExploded[1][0] == 'b') // deny and block
+			{				
+				g_BlockTpTo[param1][client] = true;
+				PrintColorText(client, "%s%s%N %sdenied denied your request and blocked future requests from you.",
+					g_msg_start,
+					g_msg_varcol,
+					param1,
 					g_msg_textcol);
 			}
 		}
-		else if(StrContains(info, "deny") != -1) // deny
+		else
 		{
-			SplitString(info, "deny", info, sizeof(info));
-			client = StringToInt(info);
-			
-			PrintColorText(client, "%s%s%s %sdenied your request.",
+			PrintColorText(param1, "%s%sThe tp requester is no longer in game.",
 				g_msg_start,
-				g_msg_varcol,
-				sTarget,
-				g_msg_textcol);
-		}
-		else if(StrContains(info, "block") != -1) // deny and block
-		{
-			SplitString(info, "block", info, sizeof(info));
-			client = StringToInt(info);
-			
-			g_BlockTpTo[param1][client] = true;
-			PrintColorText(client, "%s%s%s %sdenied denied your request and blocked future requests from you.",
-				g_msg_start,
-				g_msg_varcol,
-				sTarget,
 				g_msg_textcol);
 		}
 	}
-	else if (action == MenuAction_End)
+	else if(action == MenuAction_End)
 		CloseHandle(menu);
 }
 
 public Action:SM_CP(client, args)
 {
-	OpenCheckpointMenu(client);
+	if(GetConVarBool(g_hAllowCp))
+	{
+		OpenCheckpointMenu(client);
+	}
+	
 	return Plugin_Handled;
 }
 
@@ -477,7 +502,7 @@ OpenDeleteMenu(client)
 
 public Menu_Delete(Handle:menu, MenuAction:action, param1, param2)
 {
-	if (action == MenuAction_Select)
+	if(action == MenuAction_Select)
 	{
 		decl String:info[32];
 		GetMenuItem(menu, param2, info, sizeof(info));
@@ -485,14 +510,14 @@ public Menu_Delete(Handle:menu, MenuAction:action, param1, param2)
 		DeleteCheckpoint(param1, StringToInt(info));
 		OpenDeleteMenu(param1);
 	}
-	else if (action == MenuAction_Cancel)
+	else if(action == MenuAction_Cancel)
 	{
 		if(param2 == MenuCancel_ExitBack)
 		{
 			OpenCheckpointMenu(param1);
 		}
 	}
-	else if (action == MenuAction_End)
+	else if(action == MenuAction_End)
 		CloseHandle(menu);
 	
 }
@@ -501,38 +526,35 @@ public Action:SM_Tele(client, args)
 {
 	if(args != 0)
 	{
-		decl String:ArgString[255];
-		GetCmdArgString(ArgString, sizeof(ArgString));
+		decl String:sArg[255];
+		GetCmdArgString(sArg, sizeof(sArg));
 		
-		new cpnum = StringToInt(ArgString)-1;
-		TeleportToCheckpoint(client, cpnum);
+		new checkpoint = StringToInt(sArg) - 1;
+		TeleportToCheckpoint(client, checkpoint);
 	}
 	else
 	{
-		PrintToChat(client, "[SM] Usage: sm_tele <Checkpoint number>");
+		ReplyToCommand(client, "[SM] Usage: sm_tele <Checkpoint number>");
 	}
+	
 	return Plugin_Handled;
 }
 
 public Action:SM_Save(client, argS)
 {
 	SaveCheckpoint(client);
+	
 	return Plugin_Handled;
 }
 
 SaveCheckpoint(client)
 {
-	decl String:sMap[32];
-	GetCurrentMap(sMap, sizeof(sMap));
-	
-	if(StrContains(sMap, "bhop_exodus") == -1)
+	if(GetConVarBool(g_hAllowCp))
 	{
 		if(g_cpcount[client] < 10)
 		{
-			GetEntPropVector(client, Prop_Send, "m_vecOrigin", g_cp[client][g_cpcount[client]][0]);
-			g_cp[client][g_cpcount[client]][1][0] = GetEntPropFloat(client, Prop_Send, "m_vecVelocity[0]");
-			g_cp[client][g_cpcount[client]][1][1] = GetEntPropFloat(client, Prop_Send, "m_vecVelocity[1]");
-			g_cp[client][g_cpcount[client]][1][2] = GetEntPropFloat(client, Prop_Send, "m_vecVelocity[2]");
+			Entity_GetAbsOrigin(client, g_cp[client][g_cpcount[client]][0]);
+			Entity_GetAbsVelocity(client, g_cp[client][g_cpcount[client]][1]);
 			GetClientEyeAngles(client, g_cp[client][g_cpcount[client]][2]);
 			
 			g_HasLastSaved[client] = true;
@@ -553,13 +575,6 @@ SaveCheckpoint(client)
 				g_msg_start,
 				g_msg_textcol);
 		}
-	}
-	else
-	{
-		PrintColorText(client, "%s%sYou can't save checkpoints on %s to prevent server crashes.",
-			g_msg_start,
-			g_msg_textcol,
-			sMap);
 	}
 }
 
@@ -597,46 +612,78 @@ DeleteCheckpoint(client, cpnum)
 
 TeleportToCheckpoint(client, cpnum)
 {
-	if(0 <= cpnum < g_cpcount[client])
+	if(GetConVarBool(g_hAllowCp))
 	{
-		StopTimer(client);
-		if(g_UsePos[client])
-			TeleportEntity(client, g_cp[client][cpnum][0], NULL_VECTOR, NULL_VECTOR);
-		if(g_UseVel[client])
-			TeleportEntity(client, NULL_VECTOR, NULL_VECTOR, g_cp[client][cpnum][1]);
-		if(g_UseAng[client])
-			TeleportEntity(client, NULL_VECTOR, g_cp[client][cpnum][2], NULL_VECTOR);
-		
-		g_HasLastUsed[client] = true;
-		g_LastUsed[client]    = cpnum;
-	}
-	else
-	{
-		PrintColorText(client, "%s%sCheckpoint %s%d%s doesn't exist", 
-			g_msg_start,
-			g_msg_textcol,
-			g_msg_varcol,
-			cpnum+1,
-			g_msg_textcol);
+		if(0 <= cpnum < g_cpcount[client])
+		{
+			new Float:vPos[3];
+			for(new i; i < 3; i++)
+				vPos[i] = g_cp[client][cpnum][0][i];
+			vPos[2] += 5.0;
+			
+			StopTimer(client);
+			
+			// Prevent using velocity with checkpoints inside start zones so players can't abuse it to beat times
+			if(!Timer_IsPointInsideZone(vPos, MAIN_START, 0) && !Timer_IsPointInsideZone(vPos, BONUS_START, 0))
+			{
+				TeleportEntity(client, 
+					g_UsePos[client]?g_cp[client][cpnum][0]:NULL_VECTOR, 
+					g_UseAng[client]?g_cp[client][cpnum][2]:NULL_VECTOR, 
+					g_UseVel[client]?g_cp[client][cpnum][1]:NULL_VECTOR);
+			}
+			else
+			{
+				TeleportEntity(client, 
+					g_UsePos[client]?g_cp[client][cpnum][0]:NULL_VECTOR, 
+					g_UseAng[client]?g_cp[client][cpnum][2]:NULL_VECTOR, 
+					Float:{0.0, 0.0, 0.0});
+			}
+			
+			g_HasLastUsed[client] = true;
+			g_LastUsed[client]    = cpnum;
+		}
+		else
+		{
+			PrintColorText(client, "%s%sCheckpoint %s%d%s doesn't exist", 
+				g_msg_start,
+				g_msg_textcol,
+				g_msg_varcol,
+				cpnum+1,
+				g_msg_textcol);
+		}
 	}
 }
 
 TeleportToLastUsed(client)
 {
-	if(g_HasLastUsed[client] == true)
-		TeleportToCheckpoint(client, g_LastUsed[client]);
-	else
-		PrintColorText(client, "%s%sYou have no last used checkpoint.",
-			g_msg_start,
-			g_msg_textcol);
+	if(GetConVarBool(g_hAllowCp))
+	{
+		if(g_HasLastUsed[client] == true)
+		{
+			TeleportToCheckpoint(client, g_LastUsed[client]);
+		}
+		else
+		{
+			PrintColorText(client, "%s%sYou have no last used checkpoint.",
+				g_msg_start,
+				g_msg_textcol);
+		}
+	}
 }
 
 TeleportToLastSaved(client)
 {
-	if(g_HasLastSaved[client] == true)
-		TeleportToCheckpoint(client, g_LastSaved[client]);
-	else
-		PrintColorText(client, "%s%sYou have no last saved checkpoint.",
-			g_msg_start,
-			g_msg_textcol);
+	if(GetConVarBool(g_hAllowCp))
+	{
+		if(g_HasLastSaved[client] == true)
+		{
+			TeleportToCheckpoint(client, g_LastSaved[client]);
+		}
+		else
+		{
+			PrintColorText(client, "%s%sYou have no last saved checkpoint.",
+				g_msg_start,
+				g_msg_textcol);
+		}
+	}
 }

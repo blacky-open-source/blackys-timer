@@ -1,6 +1,4 @@
-#include <console>
-
-#define VERSION "1.6.1"
+#define VERSION "1.8.2"
 
 #define MAX_TYPES 2
 
@@ -8,26 +6,18 @@
 #define TIMER_BONUS 1
 #define TIMER_ANY 2
 
-#define MAX_STYLES 5
-
-#define STYLE_NORMAL 0
-#define STYLE_SIDEWAYS 1
-#define STYLE_WONLY 2
-#define STYLE_STAMINA 3
-#define STYLE_HALFSIDEWAYS 4
-
 #define ALL -1
 
 enum
 {
-	eType = 2,
-	eStyle,
-	ePlayerID,
-	eTime,
-	eJumps,
-	eStrafes,
-	ePoints,
-	eTimestamp
+	SQL_Column_Type = 2,
+	SQL_Column_Style,
+	SQL_Column_PlayerID,
+	SQL_Column_Time,
+	SQL_Column_Jumps,
+	SQL_Column_Strafes,
+	SQL_Column_Points,
+	SQL_Column_Timestamp
 };
 
 // Core natives
@@ -41,20 +31,55 @@ enum
 */
 native GetClientID(client);
 
-// A better name for GetClientID function
+/*
+* A better name for GetClientID()
+* 
+* @param client        Client index.
+* 
+* @return              Client's player id.
+*/
 stock GetPlayerID(client)
 {
 	return GetClientID(client);
 }
 
 /*
-* Get a client's current session playtime.
+* Gets the name of a player in the database by their Player ID
 * 
-* @param client		Client index.
-* 
-* @return 			Client's current map session playtime
+* @param PlayerID      Player ID in the database.
+* @param sName         Buffer to store the given name.
+* @param maxlength     Maxlength of the sName string.
 */
-native Float:GetPlaytime(client);
+native GetNameFromPlayerID(PlayerID, String:sName[], maxlength);
+
+/*
+* Gets a SteamID given a PlayerID in the timer database
+* 
+* @param PlayerID      Player ID in the database.
+* @param sAuth         Buffer to store the SteamID.
+* @param maxlength     Maxlength of the sAuth string.
+*/
+native GetSteamIDFromPlayerID(PlayerID, String:sAuth[], maxlength);
+
+/*
+* Gets the map id in the timer database from a map name
+* 
+* @param sMapName      The name of the map to get the map id for.
+* 
+* @return              The map's map id, 0 if map not found.
+*/
+native GetMapIdFromMapName(const String:sMapName[]);
+
+/*
+* Gets the map name from a map id
+* 
+* @param MapID         The map id you use to get the map name for.
+* @param sMapName      The buffer to hold the map name.
+* @param maxlength     The max length of the sMapName buffer.
+* 
+* @return              True if the map was found, false otherwise.
+*/
+native bool:GetMapNameFromMapId(MapID, String:sMapName[], maxlength);
 
 /*
 * Gets if a client is spamming SQL related commands or not.
@@ -74,57 +99,199 @@ native bool:IsSpamming(client);
 */
 native SetIsSpamming(client, Float:BlockTime);
 
+/*
+* Adds a command to the timer's command list.
+* 
+* @param sCommand		The command to add to the command list.
+* @param sDescription	The description of the command added to the command list.
+* 
+* @noreturn
+*/
 native RegisterCommand(const String:sCommand[], const String:sDescription[]);
 
+#include <console>
+
+/*
+* Registers a console command and adds it to the timer's command list.
+* 
+* @param sCommand		The command to register and add to the command list.
+* @param callback		The callback for the command.
+* @param sDescription	The description of the command.
+* 
+* @noreturn
+*/
 stock RegConsoleCmdEx(const String:sCommand[], ConCmd:callback, const String:sDescription[])
 {
 	RegConsoleCmd(sCommand, callback, sDescription);
 	
 	RegisterCommand(sCommand, sDescription);
 }
-// Core forwards
 
+#include <bTimes-timer>
+
+stock RegConsoleCmdPerStyle(const String:sBaseCmd[], ConCmd:callback, const String:sDescription[])
+{
+	decl String:sLiteralDesc[256], String:sType[32], String:sStyle[32], String:sTypeAbbr[32], String:sStyleAbbr[32], String:sLiteralBaseCmd[64];
+	
+	new TotalStyles = Style_GetTotal();
+	for(new Type; Type < MAX_TYPES; Type++)
+	{
+		GetTypeName(Type, sType, sizeof(sType));
+		GetTypeAbbr(Type, sTypeAbbr, sizeof(sTypeAbbr), true);
+		
+		for(new Style; Style < TotalStyles; Style++)
+		{
+			GetStyleName(Style, sStyle, sizeof(sStyle));
+			GetStyleAbbr(Style, sStyleAbbr, sizeof(sStyleAbbr), true);
+			
+			if(Style_IsEnabled(Style) && Style_IsTypeAllowed(Style, Type))
+			{
+				strcopy(sLiteralDesc, sizeof(sLiteralDesc), sDescription);
+				ReplaceString(sLiteralDesc, sizeof(sLiteralDesc), "{Type}", sType, false);
+				ReplaceString(sLiteralDesc, sizeof(sLiteralDesc), "{Style}", sStyle, false);
+				
+				FormatEx(sLiteralBaseCmd, sizeof(sLiteralBaseCmd), "sm_%s%s%s", sTypeAbbr, sBaseCmd, sStyleAbbr);
+				
+				RegConsoleCmdEx(sLiteralBaseCmd, callback, sLiteralDesc);
+			}
+		}
+	}
+}
 /*
 * Called when a map's MapID is gauranteed to be in the database
 */
 forward OnMapIDPostCheck();
 
 /*
+* Called when the list of maps from the maps table in the database has been loaded into memory
+*/
+forward OnDatabaseMapListLoaded();
+
+/*
 * Called when a player's PlayerID is retrieved and gauranteed to be in the database
 */
 forward OnPlayerIDLoaded(client);
 
+/*
+* Used to print messages to all players and allows special colors without annoying hexadecimal spam in console
+*/
 stock PrintColorTextAll(const String:msg[], any:...)
 {
 	decl String:buffer[300];
 	VFormat(buffer, sizeof(buffer), msg, 2);
 	new Handle:hMessage = StartMessageAll("SayText2"); 
 	if (hMessage != INVALID_HANDLE) 
-	{ 
-		BfWriteByte(hMessage, -1); 
-		BfWriteByte(hMessage, true);
-		BfWriteString(hMessage, buffer);
+	{
+		if(GetFeatureStatus(FeatureType_Native, "GetUserMessageType") == FeatureStatus_Available && GetUserMessageType() == UM_Protobuf) 
+		{
+			PbSetInt(hMessage, "ent_idx", 0);
+			PbSetBool(hMessage, "chat", true);
+			PbSetString(hMessage, "msg_name", buffer);
+			PbAddString(hMessage, "params", "");
+			PbAddString(hMessage, "params", "");
+			PbAddString(hMessage, "params", "");
+			PbAddString(hMessage, "params", "");
+		}
+		else
+		{
+			BfWriteByte(hMessage, 0);
+			BfWriteByte(hMessage, true);
+			BfWriteString(hMessage, buffer);
+		}
+		
 		EndMessage();
 	}
 }
 
+/*
+* Used to print messages to a single player and allows special colors without annoying hexadecimal spam in console
+*/
 stock PrintColorText(client, const String:msg[], any:...)
 {
 	if(IsClientInGame(client))
 	{
 		new String:buffer[300];
 		VFormat(buffer, sizeof(buffer), msg, 3);
+		
 		new Handle:hMessage = StartMessageOne("SayText2", client); 
 		if (hMessage != INVALID_HANDLE) 
 		{ 
-			BfWriteByte(hMessage, client); 
-			BfWriteByte(hMessage, true);
-			BfWriteString(hMessage, buffer);
+			if(GetFeatureStatus(FeatureType_Native, "GetUserMessageType") == FeatureStatus_Available && GetUserMessageType() == UM_Protobuf) 
+			{
+				PbSetInt(hMessage, "ent_idx", client);
+				PbSetBool(hMessage, "chat", true);
+				PbSetString(hMessage, "msg_name", buffer);
+				PbAddString(hMessage, "params", "");
+				PbAddString(hMessage, "params", "");
+				PbAddString(hMessage, "params", "");
+				PbAddString(hMessage, "params", "");
+			}
+			else
+			{
+				BfWriteByte(hMessage, client);
+				BfWriteByte(hMessage, true);
+				BfWriteString(hMessage, buffer);
+			}
+			
 			EndMessage();
 		}
 	}
 }
 
+/*
+* Used to print messages to a player's spectators and allows special colors without annoying hexadecimal spam in console
+*/
+stock PrintColorTextObservers(target, const String:msg[], any:...)
+{
+	new String:buffer[300];
+	VFormat(buffer, sizeof(buffer), msg, 3);
+	
+	new clients[MaxClients], observercount;
+	
+	for(new client = 1; client <= MaxClients; client++)
+	{
+		if(IsClientInGame(client) && !IsPlayerAlive(client) && !IsFakeClient(client))
+		{
+			new observee 		= GetEntPropEnt(client, Prop_Send, "m_hObserverTarget");
+			new ObserverMode 	= GetEntProp(client, Prop_Send, "m_iObserverMode");
+			
+			if(observee == target && (ObserverMode == 4 || ObserverMode == 5))
+			{
+				clients[observercount++] = client;
+			}
+		}
+	}
+	
+	if(observercount == 0)
+		return;
+	
+	new Handle:hMessage = StartMessage("SayText2", clients, observercount); 
+	if (hMessage != INVALID_HANDLE) 
+	{ 
+		if(GetFeatureStatus(FeatureType_Native, "GetUserMessageType") == FeatureStatus_Available && GetUserMessageType() == UM_Protobuf) 
+		{
+			PbSetInt(hMessage, "ent_idx", 0);
+			PbSetBool(hMessage, "chat", true);
+			PbSetString(hMessage, "msg_name", buffer);
+			PbAddString(hMessage, "params", "");
+			PbAddString(hMessage, "params", "");
+			PbAddString(hMessage, "params", "");
+			PbAddString(hMessage, "params", "");
+		}
+		else
+		{
+			BfWriteByte(hMessage, 0);
+			BfWriteByte(hMessage, true);
+			BfWriteString(hMessage, buffer);
+		}
+		
+		EndMessage();
+	}
+}
+
+/*
+* Converts a time into a formatted string
+*/
 stock FormatPlayerTime(Float:Time, String:result[], maxlength, bool:showDash, precision)
 {
 	if(Time <= 0.0 && showDash == true)
@@ -156,6 +323,9 @@ stock FormatPlayerTime(Float:Time, String:result[], maxlength, bool:showDash, pr
 		Format(result, maxlength, "%s", sPrecision);
 }
 
+/*
+* Gets a client's velocity with extra settings to disallow velocity on certain axes
+*/
 stock Float:GetClientVelocity(client, bool:UseX, bool:UseY, bool:UseZ)
 {
 	new Float:vVel[3];
@@ -178,6 +348,9 @@ stock Float:GetClientVelocity(client, bool:UseX, bool:UseY, bool:UseZ)
 	return GetVectorLength(vVel);
 }
 
+/*
+* Gets the name of a specified type
+*/
 stock GetTypeName(Type, String:sType[], maxlength, bool:bBlankIfMain = false)
 {
 	if((Type == TIMER_MAIN && bBlankIfMain == true) || Type == ALL)
@@ -191,6 +364,9 @@ stock GetTypeName(Type, String:sType[], maxlength, bool:bBlankIfMain = false)
 	FormatEx(sType, maxlength, sTypeList[Type]);
 }
 
+/*
+* Gets the abbreviation of a specified type
+*/
 stock GetTypeAbbr(Type, String:sAbbr[], maxlength, bool:bBlankIfMain = false)
 {
 	if((Type == TIMER_MAIN && bBlankIfMain == true) || Type == ALL)
@@ -204,32 +380,9 @@ stock GetTypeAbbr(Type, String:sAbbr[], maxlength, bool:bBlankIfMain = false)
 	FormatEx(sAbbr, maxlength, sAbbrList[Type]);
 }
 
-stock GetStyleName(Style, String:sStyle[], maxlength)
-{
-	if(Style == ALL)
-	{
-		FormatEx(sStyle, maxlength, "");
-		return;
-	}
-	
-	decl String:sStyleList[MAX_STYLES][] = {"Normal", "Sideways", "W-Only", "Stamina", "Half-Sideways"};
-	
-	FormatEx(sStyle, maxlength, sStyleList[Style]);
-}
-
-stock GetStyleAbbr(Style, String:sAbbr[], maxlength)
-{
-	if(Style == ALL)
-	{
-		FormatEx(sAbbr, maxlength, "");
-		return;
-	}
-	
-	decl String:sAbbrList[MAX_STYLES][] = {"n", "sw", "w", "stam", "hsw"};
-	
-	FormatEx(sAbbr, maxlength, sAbbrList[Style]);
-}
-
+/*
+* Turns all lowercase letters in a string to uppercase
+*/
 stock StringToUpper(String:buffer[])
 {
 	new len = strlen(buffer);
@@ -240,15 +393,20 @@ stock StringToUpper(String:buffer[])
 	}
 }
 
+/*
+* Adds brackets to a string, might change so players can choose brackets
+*/
 stock AddBracketsToString(String:buffer[], maxlength)
 {
 	if(strlen(buffer) > 0)
 		Format(buffer, maxlength, "[%s]", buffer);
 }
 
+/*
+* Adds a space to the end of a string, probably gonna remove this
+*/
 stock AddSpaceToEnd(String:buffer[], maxlength)
 {
 	if(strlen(buffer) > 0)
 		Format(buffer, maxlength, "%s ", buffer);
 }
-

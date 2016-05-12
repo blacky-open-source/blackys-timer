@@ -1,0 +1,7 @@
+Run these SQL commands when upgrading to 1.8.x from 1.7.x or earlier:
+
+ALTER TABLE zones ADD COLUMN RowID INTEGER NOT NULL AUTO_INCREMENT PRIMARY KEY;
+ALTER TABLE zones ADD COLUMN flags INTEGER;
+UPDATE zones SET Flags = 6 WHERE Type = 5;
+UPDATE zones SET flags = 3 WHERE Type = 4;
+

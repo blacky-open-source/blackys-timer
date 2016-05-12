@@ -4,7 +4,7 @@
 
 public Plugin:myinfo = 
 {
-	name = "[bTimes] random",
+	name = "[bTimes] Random",
 	author = "blacky",
 	description = "Handles events and modifies them to fit bTimes' needs",
 	version = VERSION,
@@ -23,9 +23,17 @@ public Plugin:myinfo =
 #define HUD_OFF (1<<0|1<<3|1<<4|1<<8)
 #define HUD_ON  0
 #define HUD_FUCK (1<<0|1<<1|1<<2|1<<3|1<<4|1<<5|1<<6|1<<7|1<<8|1<<9|1<<10|1<<11)
+
+enum
+{
+	GameType_CSS,
+	GameType_CSGO
+};
+
+new g_GameType;
  
 new	g_Settings[MAXPLAYERS+1] = {SHOW_HINT, ...},
-	g_bHooked;
+	bool:g_bHooked;
 	
 new 	Float:g_fMapStart;
 	
@@ -35,12 +43,12 @@ new 	g_iSoundEnts[2048];
 new 	g_iNumSounds;
 
 // Settings
-new 	Handle:g_AllowAuto,
-	Handle:g_hAllowKeysAlive,
+new 	Handle:g_hAllowKeysAlive,
 	Handle:g_hKeysShowsJumps,
 	Handle:g_hAllowKnifeDrop,
 	Handle:g_WeaponDespawn,
-	Handle:g_hAutoStopsTimer;
+	Handle:g_hNoDamage,
+	Handle:g_hAllowHide;
 	
 new	Handle:g_MessageStart,
 	Handle:g_MessageVar,
@@ -53,28 +61,48 @@ new 	String:g_msg_textcol[128] = {"\x01"};
  
 public OnPluginStart()
 {
+	decl String:sGame[64];
+	GetGameFolderName(sGame, sizeof(sGame));
+	
+	if(StrEqual(sGame, "cstrike"))
+		g_GameType = GameType_CSS;
+	else if(StrEqual(sGame, "csgo"))
+		g_GameType = GameType_CSGO;
+	else
+		SetFailState("This timer does not support this game (%s)", sGame);
+	
 	// Server settings
-	g_AllowAuto 		= CreateConVar("timer_allowauto", "1", "Allows players to use auto bunnyhop.", 0, true, 0.0, true, 1.0);
-	g_hAllowKeysAlive	= CreateConVar("timer_allowkeysalive", "1", "Allows players to see !keys while alive.", 0, true, 0.0, true, 1.0);
-	g_hKeysShowsJumps	= CreateConVar("timer_keysshowsjumps", "1", "The !keys features shows when a player is using their jump button.", 0, true, 0.0, true, 1.0);
-	g_hAllowKnifeDrop = CreateConVar("timer_allowknifedrop", "1", "Allows players to drop any weapons (including knives and grenades)", 0, true, 0.0, true, 1.0);
-	g_WeaponDespawn	= CreateConVar("timer_weapondespawn", "1", "Kills weapons a second after spawning to prevent flooding server.", 0, true, 0.0, true, 1.0);
-	g_MessageStart	= CreateConVar("timer_msgstart", "^556b2f[Timer] ^daa520- ", "Sets the start of all timer messages.");
-	g_MessageVar		= CreateConVar("timer_msgvar", "^B4D398", "Sets the color of variables in timer messages such as player names.");
-	g_MessageText		= CreateConVar("timer_msgtext", "^daa520", "Sets the color of general text in timer messages.");
-	g_hAutoStopsTimer	= CreateConVar("timer_autostopstimer", "0", "Players can't get times with autohop on.");
+	g_hAllowKeysAlive  = CreateConVar("timer_allowkeysalive", "1", "Allows players to see !keys while alive.", 0, true, 0.0, true, 1.0);
+	g_hKeysShowsJumps  = CreateConVar("timer_keysshowsjumps", "1", "The !keys features shows when a player is using their jump button.", 0, true, 0.0, true, 1.0);
+	g_hAllowKnifeDrop  = CreateConVar("timer_allowknifedrop", "1", "Allows players to drop any weapons (including knives and grenades)", 0, true, 0.0, true, 1.0);
+	g_WeaponDespawn    = CreateConVar("timer_weapondespawn", "1", "Kills weapons a second after spawning to prevent flooding server.", 0, true, 0.0, true, 1.0);
+	g_hNoDamage        = CreateConVar("timer_nodamage", "1", "Blocks all player damage when on", 0, true, 0.0, true, 1.0);
+	g_hAllowHide       = CreateConVar("timer_allowhide", "1", "Allows players to use the !hide command", 0, true, 0.0, true, 1.0);
+	
+	if(g_GameType == GameType_CSS)
+	{
+		g_MessageStart     = CreateConVar("timer_msgstart", "^556b2f[Timer] ^daa520- ", "Sets the start of all timer messages.");
+		g_MessageVar       = CreateConVar("timer_msgvar", "^B4D398", "Sets the color of variables in timer messages such as player names.");
+		g_MessageText      = CreateConVar("timer_msgtext", "^DAA520", "Sets the color of general text in timer messages.");
+	}
+	else if(g_GameType == GameType_CSGO)
+	{
+		g_MessageStart     = CreateConVar("timer_msgstart", "^3^A^3[^4Timer^3] ^2- ", "Sets the start of all timer messages. (Always keep the ^A after the first color code)");
+		g_MessageVar       = CreateConVar("timer_msgvar", "^4", "Sets the color of variables in timer messages such as player names.");
+		g_MessageText      = CreateConVar("timer_msgtext", "^5", "Sets the color of general text in timer messages.");
+	}
 	
 	// Hook specific convars
 	HookConVarChange(g_MessageStart, OnMessageStartChanged);
 	HookConVarChange(g_MessageVar, OnMessageVarChanged);
 	HookConVarChange(g_MessageText, OnMessageTextChanged);
-	HookConVarChange(g_hAutoStopsTimer, OnAutoStopsTimerChanged);
+	HookConVarChange(g_hNoDamage, OnNoDamageChanged);
+	HookConVarChange(g_hAllowHide, OnAllowHideChanged);
 	
 	// Create config file if it doesn't exist
 	AutoExecConfig(true, "random", "timer");
 	
 	// Event hooks
-	HookEvent("player_spawn", Event_PlayerSpawn_Pre, EventHookMode_Pre);
 	HookEvent("player_spawn", Event_PlayerSpawn_Post, EventHookMode_Post);
 	HookEvent("round_start", Event_RoundStart, EventHookMode_PostNoCopy);
 	AddNormalSoundHook(NormalSHook);
@@ -85,9 +113,6 @@ public OnPluginStart()
 	AddCommandListener(DropItem, "drop");
 	
 	// Player commands
-	RegConsoleCmdEx("sm_auto", SM_Auto, "Toggles auto bunnyhop");
-	RegConsoleCmdEx("sm_autobhop", SM_Auto, "Toggles auto bunnyhop");
-	RegConsoleCmdEx("sm_bhop", SM_Auto, "Toggles auto bunnyhop");
 	RegConsoleCmdEx("sm_hide", SM_Hide, "Toggles hide");
 	RegConsoleCmdEx("sm_unhide", SM_Hide, "Toggles hide");
 	RegConsoleCmdEx("sm_keys", SM_Keys, "Toggles showing pressed keys");
@@ -97,9 +122,11 @@ public OnPluginStart()
 	RegConsoleCmdEx("sm_spectate", SM_Spec, "Be a spectator");
 	RegConsoleCmdEx("sm_maptime", SM_Maptime, "Shows how long the current map has been on.");
 	RegConsoleCmdEx("sm_sound", SM_Sound, "Choose different sounds to stop when they play.");
+	RegConsoleCmdEx("sm_sounds", SM_Sound, "Choose different sounds to stop when they play.");
 	RegConsoleCmdEx("sm_specinfo", SM_Specinfo, "Shows who is spectating you.");
 	RegConsoleCmdEx("sm_specs", SM_Specinfo, "Shows who is spectating you.");
 	RegConsoleCmdEx("sm_speclist", SM_Specinfo, "Shows who is spectating you.");
+	RegConsoleCmdEx("sm_spectators", SM_Specinfo, "Shows who is spectating you.");
 	RegConsoleCmdEx("sm_normalspeed", SM_Normalspeed, "Sets your speed to normal speed.");
 	RegConsoleCmdEx("sm_speed", SM_Speed, "Changes your speed to the specified value.");
 	RegConsoleCmdEx("sm_setspeed", SM_Speed, "Changes your speed to the specified value.");
@@ -109,8 +136,8 @@ public OnPluginStart()
 	RegConsoleCmdEx("sm_normalgrav", SM_Normalgrav, "Sets your gravity to normal.");
 	
 	// Admin commands
-	RegAdminCmd("sm_move", SM_Move, ADMFLAG_KICK, "For getting players out of places they are stuck in");
-	RegAdminCmd("sm_hudfuck", SM_Hudfuck, ADMFLAG_SLAY, "Removes a player's hud so they can only leave the server/game through task manager (Use only on players who deserve it)");
+	RegAdminCmd("sm_move", SM_Move, ADMFLAG_GENERIC, "For getting players out of places they are stuck in");
+	RegAdminCmd("sm_hudfuck", SM_Hudfuck, ADMFLAG_GENERIC, "Removes a player's hud so they can only leave the server/game through task manager (Use only on players who deserve it)");
 	
 	// Client settings
 	g_hSettingsCookie = RegClientCookie("timer", "Timer settings", CookieAccess_Public);
@@ -140,10 +167,52 @@ public OnMapStart()
 public OnClientPutInServer(client)
 {
 	// for !hide
-	SDKHook(client, SDKHook_SetTransmit, Hook_SetTransmit);
+	if(GetConVarBool(g_hAllowHide))
+	{
+		SDKHook(client, SDKHook_SetTransmit, Hook_SetTransmit);
+	}
 	
 	// prevents damage
-	SDKHook(client, SDKHook_OnTakeDamage, Hook_OnTakeDamage);
+	if(GetConVarBool(g_hNoDamage))
+	{
+		SDKHook(client, SDKHook_OnTakeDamage, Hook_OnTakeDamage);
+	}
+}
+
+public OnNoDamageChanged(Handle:convar, const String:oldValue[], const String:newValue[])
+{
+	for(new client = 1; client <= MaxClients; client++)
+	{
+		if(IsClientInGame(client))
+		{
+			if(newValue[0] == '0')
+			{
+				SDKUnhook(client, SDKHook_OnTakeDamage, Hook_OnTakeDamage);
+			}
+			else
+			{
+				SDKHook(client, SDKHook_OnTakeDamage, Hook_OnTakeDamage);
+			}
+		}
+	}
+}
+
+public OnAllowHideChanged(Handle:convar, const String:oldValue[], const String:newValue[])
+{	
+	for(new client = 1; client <= MaxClients; client++)
+	{
+		if(IsClientInGame(client))
+		{
+			if(newValue[0] == '0')
+			{
+				SDKUnhook(client, SDKHook_SetTransmit, Hook_SetTransmit);
+			}
+			else
+			{
+				SDKHook(client, SDKHook_SetTransmit, Hook_SetTransmit);
+			}
+		}
+	}
 }
 
 public OnClientDisconnect_Post(client)
@@ -165,6 +234,12 @@ public OnClientCookiesCached(client)
 	{
 		g_Settings[client] = StringToInt(cookies);
 	}
+	
+	
+	if((g_Settings[client] & STOP_GUNS) && g_bHooked == false)
+	{
+		g_bHooked = true;
+	}
 }
 
 public OnConfigsExecuted()
@@ -175,21 +250,56 @@ public OnConfigsExecuted()
 	Call_PushCell(0);
 	Call_PushString(g_msg_start);
 	Call_Finish();
-	ReplaceString(g_msg_start, sizeof(g_msg_start), "^", "\x07", false);
 	
 	GetConVarString(g_MessageVar, g_msg_varcol, sizeof(g_msg_varcol));
 	Call_StartForward(g_fwdChatChanged);
 	Call_PushCell(1);
 	Call_PushString(g_msg_varcol);
 	Call_Finish();
-	ReplaceString(g_msg_varcol, sizeof(g_msg_varcol), "^", "\x07", false);
 	
 	GetConVarString(g_MessageText, g_msg_textcol, sizeof(g_msg_textcol));
 	Call_StartForward(g_fwdChatChanged);
 	Call_PushCell(2);
 	Call_PushString(g_msg_textcol);
 	Call_Finish();
-	ReplaceString(g_msg_textcol, sizeof(g_msg_textcol), "^", "\x07", false);
+}
+
+public OnTimerChatChanged(MessageType, String:Message[])
+{
+	if(MessageType == 0)
+	{
+		Format(g_msg_start, sizeof(g_msg_start), Message);
+		ReplaceMessage(g_msg_start, sizeof(g_msg_start));
+	}
+	else if(MessageType == 1)
+	{
+		Format(g_msg_varcol, sizeof(g_msg_varcol), Message);
+		ReplaceMessage(g_msg_varcol, sizeof(g_msg_varcol));
+	}
+	else if(MessageType == 2)
+	{
+		Format(g_msg_textcol, sizeof(g_msg_textcol), Message);
+		ReplaceMessage(g_msg_textcol, sizeof(g_msg_textcol));
+	}
+}
+
+ReplaceMessage(String:message[], maxlength)
+{
+	if(g_GameType == GameType_CSS)
+	{
+		ReplaceString(message, maxlength, "^", "\x07", false);
+	}
+	else if(g_GameType == GameType_CSGO)
+	{
+		ReplaceString(message, maxlength, "^A", "\x0A");
+		ReplaceString(message, maxlength, "^1", "\x01");
+		ReplaceString(message, maxlength, "^2", "\x02");
+		ReplaceString(message, maxlength, "^3", "\x03");
+		ReplaceString(message, maxlength, "^4", "\x04");
+		ReplaceString(message, maxlength, "^5", "\x05");
+		ReplaceString(message, maxlength, "^6", "\x06");
+		ReplaceString(message, maxlength, "^7", "\x07");
+	}
 }
 
 public OnMessageStartChanged(Handle:convar, const String:oldValue[], const String:newValue[])
@@ -222,20 +332,6 @@ public OnMessageTextChanged(Handle:convar, const String:oldValue[], const String
 	ReplaceString(g_msg_textcol, sizeof(g_msg_textcol), "^", "\x07", false);
 }
 
-public OnAutoStopsTimerChanged(Handle:convar, const String:oldValue[], const String:newValue[])
-{
-	if(StringToInt(newValue) == 1)
-	{
-		for(new client=1; client<=MaxClients; client++)
-		{
-			if(IsClientInGame(client) && IsBeingTimed(client, TIMER_ANY) && g_Settings[client] & AUTO_BHOP)
-			{
-				StopTimer(client);
-			}
-		}
-	}
-}
-
 public Action:Timer_StopMusic(Handle:timer, any:data)
 {
 	new ientity, String:sSound[128];
@@ -260,6 +356,7 @@ public Action:Timer_StopMusic(Handle:timer, any:data)
 	}
 }
 
+// Credits to GoD-Tony for everything related to stopping gun sounds
 public Action:CSS_Hook_ShotgunShot(const String:te_name[], const Players[], numClients, Float:delay)
 {
 	if(!g_bHooked)
@@ -309,11 +406,11 @@ CheckHooks()
 {
 	new bool:bShouldHook = false;
 	
-	for (new i = 1; i <= MaxClients; i++)
+	for(new i = 1; i <= MaxClients; i++)
 	{
 		if(IsClientInGame(i))
 		{
-			if (g_Settings[i] & STOP_GUNS)
+			if(g_Settings[i] & STOP_GUNS)
 			{
 				bShouldHook = true;
 				break;
@@ -327,8 +424,8 @@ CheckHooks()
 
 public Action:AmbientSHook(String:sample[PLATFORM_MAX_PATH], &entity, &Float:volume, &level, &pitch, Float:pos[3], &flags, &Float:delay)
 {
-	// Stop music
-	CreateTimer(0.1, Timer_StopMusic);
+	// Stop music next frame
+	CreateTimer(0.0, Timer_StopMusic);
 }
  
 public Action:NormalSHook(clients[64], &numClients, String:sample[PLATFORM_MAX_PATH], &entity, &channel, &Float:volume, &level, &pitch, &flags)
@@ -371,16 +468,6 @@ public OnEntityCreated(entity, const String:classname[])
 		}
 	}
 }
-
-public Action:OnTimerStart_Pre(client, Type, Style)
-{
-	if(g_Settings[client] & AUTO_BHOP && GetConVarBool(g_hAutoStopsTimer))
-	{
-		return Plugin_Handled;
-	}
-	
-	return Plugin_Continue;
-}
  
 public Action:KillEntity(Handle:timer, any:ref)
 {
@@ -397,12 +484,6 @@ public Action:KillEntity(Handle:timer, any:ref)
 				AcceptEntityInput(ent, "Kill");
 		}
 	}
-}
- 
-public Action:Event_PlayerSpawn_Pre(Handle:event, const String:name[], bool:dontBroadcast)
-{
-	new client = GetClientOfUserId(GetEventInt(event, "userid"));
-	StopTimer(client);
 }
  
 public Action:Event_PlayerSpawn_Post(Handle:event, const String:name[], bool:dontBroadcast)
@@ -465,75 +546,6 @@ public Action:CS_OnCSWeaponDrop(client, weaponIndex)
 	}
 }
 
-// Auto bhop
-public Action:SM_Auto(client, args)
-{
-	if(GetConVarBool(g_AllowAuto) == true)
-	{
-		if (args < 1)
-		{
-			g_Settings[client] ^= AUTO_BHOP;
-			
-			if(GetConVarBool(g_hAutoStopsTimer))
-				StopTimer(client);
-			
-			if (g_Settings[client] & AUTO_BHOP)
-			{
-				PrintColorText(client, "%s%sAuto bhop %senabled",
-					g_msg_start,
-					g_msg_textcol,
-					g_msg_varcol);
-			}
-			else
-			{
-				PrintColorText(client, "%s%sAuto bhop %sdisabled",
-					g_msg_start,
-					g_msg_textcol,
-					g_msg_varcol);
-			}
-				
-			if(AreClientCookiesCached(client))
-			{
-				decl String:sAutoCookie[16];
-				IntToString(g_Settings[client], sAutoCookie, sizeof(sAutoCookie));
-				SetClientCookie(client, g_hSettingsCookie, sAutoCookie);
-			}
-		}
-		else if (args == 1)
-		{
-			decl String:TargetArg[128];
-			GetCmdArgString(TargetArg, sizeof(TargetArg));
-			new TargetID = FindTarget(client, TargetArg, true, false);
-			if(TargetID != -1)
-			{
-				decl String:TargetName[128];
-				GetClientName(TargetID, TargetName, sizeof(TargetName));
-				if (g_Settings[TargetID] & AUTO_BHOP)
-				{
-					PrintColorText(client, "%s%sPlayer %s%s%s has auto bhop %senabled",
-						g_msg_start,
-						g_msg_textcol,
-						g_msg_varcol,
-						TargetName,
-						g_msg_textcol,
-						g_msg_varcol);
-				}
-				else
-				{
-					PrintColorText(client, "%s%sPlayer %s%s%s has auto bhop %sdisabled",
-						g_msg_start,
-						g_msg_textcol,
-						g_msg_varcol,
-						TargetName,
-						g_msg_textcol,
-						g_msg_varcol);
-				}
-			}
-		}
-	}
-	return Plugin_Handled;
-}
-
 // Tells a player who is spectating them
 public Action:SM_Specinfo(client, args)
 {
@@ -543,7 +555,7 @@ public Action:SM_Specinfo(client, args)
 	}
 	else
 	{
-		new Target 	 = GetEntPropEnt(client, Prop_Send, "m_hObserverTarget");
+		new Target       = GetEntPropEnt(client, Prop_Send, "m_hObserverTarget");
 		new ObserverMode = GetEntProp(client, Prop_Send, "m_iObserverMode");
 			
 		if((0 < Target <= MaxClients) && (ObserverMode == 4 || ObserverMode == 5))
@@ -557,16 +569,17 @@ public Action:SM_Specinfo(client, args)
 				g_msg_textcol);
 		}
 	}
+	
 	return Plugin_Handled;
 }
 
 ShowSpecinfo(client, target)
 {
-	decl String:sNames[MaxClients][MAX_NAME_LENGTH];
+	decl String:sNames[MaxClients + 1][MAX_NAME_LENGTH];
 	new index;
 	new bool:bClientHasAdmin = GetAdminFlag(GetUserAdmin(client), Admin_Generic, Access_Effective);
 	
-	for(new i=1; i<=MaxClients; i++)
+	for(new i = 1; i <= MaxClients; i++)
 	{
 		if(IsClientInGame(i))
 		{
@@ -600,7 +613,7 @@ ShowSpecinfo(client, target)
 		DrawPanelText(menu, sTitle);
 		DrawPanelText(menu, " ");
 		
-		for(new i=0; i<index; i++)
+		for(new i = 0; i < index; i++)
 		{
 			DrawPanelText(menu, sNames[i]);
 		}
@@ -629,7 +642,7 @@ public Menu_SpecInfo(Handle:menu, MenuAction:action, param1, param2)
 // Hide other players
 public Action:SM_Hide(client, args)
 {
-	g_Settings[client] ^= HIDE_PLAYERS;
+	SetClientSettings(client, GetClientSettings(client) ^ HIDE_PLAYERS);
 	
 	if(g_Settings[client] & HIDE_PLAYERS)
 	{
@@ -646,13 +659,6 @@ public Action:SM_Hide(client, args)
 			g_msg_varcol);
 	}
 	
-	// Save cookies
-	if(AreClientCookiesCached(client))
-	{
-		decl String:sHideCookie[16];
-		IntToString(g_Settings[client], sHideCookie, sizeof(sHideCookie));
-		SetClientCookie(client, g_hSettingsCookie, sHideCookie);
-	}
 	return Plugin_Handled;
 }
 
@@ -719,17 +725,14 @@ public Action:SM_Move(client, args)
 			
 			TeleportEntity(Target, pos, NULL_VECTOR, NULL_VECTOR);
 			
-			decl String:clientname[MAX_NAME_LENGTH], String:targetname[MAX_NAME_LENGTH];
-			GetClientName(client, clientname, sizeof(clientname));
-			GetClientName(Target, targetname, sizeof(targetname));
-			
-			LogMessage("%s moved %s", clientname, targetname);
+			LogMessage("%L moved %L", client, Target);
 		}
 	}
 	else
 	{
 		PrintToChat(client, "[SM] Usage: sm_move <target>");
 	}
+	
 	return Plugin_Handled;
 }
 
@@ -754,28 +757,22 @@ public Action:SM_Hudfuck(client, args)
 			g_msg_textcol);
 		
 		// Log the hudfuck event
-		decl String:sName[MAX_NAME_LENGTH], String:sAuth[32], String:sTargetAuth[32];
-		GetClientName(client, sName, sizeof(sName));
-		GetClientAuthString(client, sAuth, sizeof(sAuth));
-		GetClientAuthString(target, sTargetAuth, sizeof(sTargetAuth));
-		
-		LogMessage("%s <%s> executed sm_hudfuck command on %s <%s>", sName, sAuth, targetname, sTargetAuth);
+		LogMessage("%L executed sm_hudfuck command on %L", client, target);
 	}
 	else
 	{
 		new Handle:menu = CreateMenu(Menu_HudFuck);
 		SetMenuTitle(menu, "Select player to HUD FUCK");
 		
-		decl String:itargetname[MAX_NAME_LENGTH], String:authid[32], String:display[64], String:index[8];
-		for(new itarget=1; itarget <= MaxClients; itarget++)
+		decl String:sAuth[32], String:sDisplay[64], String:sInfo[8];
+		for(new iTarget = 1; iTarget <= MaxClients; iTarget++)
 		{
-			if(IsClientInGame(itarget))
+			if(IsClientInGame(iTarget))
 			{
-				GetClientName(itarget, itargetname, sizeof(itargetname));
-				GetClientAuthString(itarget, authid, sizeof(authid));
-				Format(display, sizeof(display), "%s <%s>", itargetname, authid);
-				IntToString(itarget, index, sizeof(index));
-				AddMenuItem(menu, index, display);
+				GetClientAuthString(iTarget, sAuth, sizeof(sAuth));
+				Format(sDisplay, sizeof(sDisplay), "%N <%s>", iTarget, sAuth);
+				IntToString(GetClientUserId(iTarget), sInfo, sizeof(sInfo));
+				AddMenuItem(menu, sInfo, sDisplay);
 			}
 		}
 		
@@ -793,28 +790,27 @@ public Menu_HudFuck(Handle:menu, MenuAction:action, param1, param2)
 		new String:info[32];
 		GetMenuItem(menu, param2, info, sizeof(info));
 		
-		new selection = StringToInt(info);
-		for(new target=1; target <= MaxClients; target++)
+		new target = GetClientOfUserId(StringToInt(info));
+		if(target != 0)
 		{
-			if(target == selection)
-			{
-				if(IsClientInGame(target))
-				{
-					decl String:name[MAX_NAME_LENGTH];
-					GetClientName(target, name, sizeof(name));
-					PrintToChatAll(name);
-					SetEntProp(target, Prop_Send, "m_iHideHUD", HUD_FUCK);
-				}
-				else
-				{
-					PrintColorText(param1, "%s%s Target not in game",
-						g_msg_start,
-						g_msg_textcol);
-				}
-			}
-		}	
+			PrintColorTextAll("%s%s%N %shas been HUD-FUCKED for their negative actions", 
+				g_msg_start,
+				g_msg_varcol,
+				target,
+				g_msg_textcol);
+			SetEntProp(target, Prop_Send, "m_iHideHUD", HUD_FUCK);
+			
+			// Log the hudfuck event
+			LogMessage("%L executed sm_hudfuck command on %L", param1, target);
+		}
+		else
+		{
+			PrintColorText(param1, "%s%sTarget not in game",
+				g_msg_start,
+				g_msg_textcol);
+		}
 	}
-	else if (action == MenuAction_End)
+	else if(action == MenuAction_End)
 		CloseHandle(menu);
 }
 
@@ -848,7 +844,8 @@ public Action:SM_Maptime(client, args)
 // Show player key presses
 public Action:SM_Keys(client, args)
 {
-	g_Settings[client] ^= SHOW_KEYS;
+	SetClientSettings(client, GetClientSettings(client) ^ SHOW_KEYS);
+	
 	if(g_Settings[client] & SHOW_KEYS)
 	{
 		PrintColorText(client, "%s%sShowing key presses",
@@ -863,13 +860,7 @@ public Action:SM_Keys(client, args)
 			g_msg_start,
 			g_msg_textcol);
 	}
-		
-	if(AreClientCookiesCached(client))
-	{
-		decl String:sKeysCookie[16];
-		IntToString(g_Settings[client], sKeysCookie, sizeof(sKeysCookie));
-		SetClientCookie(client, g_hSettingsCookie, sKeysCookie);
-	}
+	
 	return Plugin_Handled;
 }
 
@@ -932,18 +923,24 @@ public Action:SM_Sound(client, args)
 	new Handle:menu = CreateMenu(Menu_StopSound);
 	SetMenuTitle(menu, "Control Sounds");
 	
-	decl String:info[16];
-	IntToString(STOP_DOORS, info, sizeof(info));
-	AddMenuItem(menu, info, (g_Settings[client] & STOP_DOORS)?"Door sounds: Off":"Door sounds: On");
+	decl String:sInfo[16];
+	IntToString(STOP_DOORS, sInfo, sizeof(sInfo));
+	AddMenuItem(menu, sInfo, (g_Settings[client] & STOP_DOORS)?"Door sounds: Off":"Door sounds: On");
 	
-	IntToString(STOP_GUNS, info, sizeof(info));
-	AddMenuItem(menu, info, (g_Settings[client] & STOP_GUNS)?"Gun sounds: Off":"Gun sounds: On");
+	IntToString(STOP_GUNS, sInfo, sizeof(sInfo));
+	AddMenuItem(menu, sInfo, (g_Settings[client] & STOP_GUNS)?"Gun sounds: Off":"Gun sounds: On");
 	
-	IntToString(STOP_MUSIC, info, sizeof(info));
-	AddMenuItem(menu, info, (g_Settings[client] & STOP_MUSIC)?"Music: Off":"Music: On");
+	IntToString(STOP_MUSIC, sInfo, sizeof(sInfo));
+	AddMenuItem(menu, sInfo, (g_Settings[client] & STOP_MUSIC)?"Music: Off":"Music: On");
 	
-	IntToString(STOP_RECSND, info, sizeof(info));
-	AddMenuItem(menu, info, (g_Settings[client] & STOP_RECSND)?"WR sound: Off":"WR sound: On");
+	IntToString(STOP_RECSND, sInfo, sizeof(sInfo));
+	AddMenuItem(menu, sInfo, (g_Settings[client] & STOP_RECSND)?"WR sound: Off":"WR sound: On");
+	
+	IntToString(STOP_RECSND, sInfo, sizeof(sInfo));
+	AddMenuItem(menu, sInfo, (g_Settings[client] & STOP_PBSND)?"Personal best sound: Off":"Personal best sound: On");
+	
+	IntToString(STOP_RECSND, sInfo, sizeof(sInfo));
+	AddMenuItem(menu, sInfo, (g_Settings[client] & STOP_FAILSND)?"No new time sound: Off":"No new time sound: On");
 	
 	SetMenuExitButton(menu, true);
 	DisplayMenu(menu, client, MENU_TIME_FOREVER);
@@ -953,18 +950,18 @@ public Action:SM_Sound(client, args)
 
 public Menu_StopSound(Handle:menu, MenuAction:action, param1, param2)
 {
-	if (action == MenuAction_Select)
+	if(action == MenuAction_Select)
 	{
-		new String:info[32];
+		decl String:info[32];
 		GetMenuItem(menu, param2, info, sizeof(info));
 		
-		new iInfo = StringToInt(info);
-		g_Settings[param1] ^= iInfo;
+		new setting = StringToInt(info);
+		SetClientSettings(param1, GetClientSettings(param1) ^ setting);
 		
-		if(iInfo == STOP_GUNS)
+		if(setting == STOP_GUNS)
 			CheckHooks();
 		
-		if(iInfo == STOP_MUSIC && (g_Settings[param1] & STOP_MUSIC))
+		if(setting == STOP_MUSIC && (g_Settings[param1] & STOP_MUSIC))
 		{
 			new ientity, String:sSound[128];
 			for (new i = 0; i < g_iNumSounds; i++)
@@ -979,18 +976,12 @@ public Menu_StopSound(Handle:menu, MenuAction:action, param1, param2)
 			}
 		}
 		
-		// Save settings
-		if(AreClientCookiesCached(param1))
-		{
-			decl String:sSoundCookie[16];
-			IntToString(g_Settings[param1], sSoundCookie, sizeof(sSoundCookie));
-			SetClientCookie(param1, g_hSettingsCookie, sSoundCookie);
-		}
-		
 		FakeClientCommand(param1, "sm_sound");
 	}
-	else if (action == MenuAction_End)
+	else if(action == MenuAction_End)
+	{
 		CloseHandle(menu);
+	}
 }
 
 public Action:SM_Speed(client, args)
@@ -1000,6 +991,7 @@ public Action:SM_Speed(client, args)
 		// Get the specified speed
 		decl String:sArg[250];
 		GetCmdArgString(sArg, sizeof(sArg));
+		
 		new Float:fSpeed = StringToFloat(sArg);
 		
 		// Check if the speed value is in a valid range
@@ -1088,24 +1080,29 @@ public Action:SM_Normalgrav(client, args)
 
 public Action:Hook_SetTransmit(entity, client)
 {
-	if (client != entity && (0 < entity <= MaxClients) && (g_Settings[client] & HIDE_PLAYERS) && IsPlayerAlive(client))
-		return Plugin_Handled;
-	
-	if(client != entity && (0 < entity <= MaxClients) && GetEntityMoveType(entity) == MOVETYPE_NOCLIP && IsPlayerAlive(client))
-		if(!IsFakeClient(entity))
+	if(client != entity && (0 < entity <= MaxClients) && IsPlayerAlive(client))
+	{
+		if(g_Settings[client] & HIDE_PLAYERS)
 			return Plugin_Handled;
 		
-	if(client != entity && (0 < entity <= MaxClients) && (g_Settings[client] & HIDE_PLAYERS))
+		if(GetEntityMoveType(entity) == MOVETYPE_NOCLIP && !IsFakeClient(entity))
+			return Plugin_Handled;
+		
 		if(!IsPlayerAlive(entity))
 			return Plugin_Handled;
-			
+	}
+	
 	return Plugin_Continue;
 }
 
 public Action:Hook_OnTakeDamage(victim, &attacker, &inflictor, &Float:damage, &damagetype)
 {
-	SetEntPropVector(victim, Prop_Send, "m_vecPunchAngle", NULL_VECTOR);
-	SetEntPropVector(victim, Prop_Send, "m_vecPunchAngleVel", NULL_VECTOR);
+	if(g_GameType == GameType_CSS)
+	{
+		SetEntPropVector(victim, Prop_Send, "m_vecPunchAngle", NULL_VECTOR);
+		SetEntPropVector(victim, Prop_Send, "m_vecPunchAngleVel", NULL_VECTOR);
+	}
+	
 	return Plugin_Handled;
 }
  
@@ -1135,27 +1132,6 @@ public Action:OnPlayerRunCmd(client, &buttons, &impulse, Float:vel[3], Float:ang
 			}
 		}
 	}
-	
-	// auto bhop check
-	if(GetConVarBool(g_AllowAuto) == true)
-	{
-		if((g_Settings[client] & AUTO_BHOP) && IsPlayerAlive(client))
-		{
-			if (buttons & IN_JUMP)
-			{
-				if (!(GetEntityFlags(client) & FL_ONGROUND))
-				{
-					if (!(GetEntityMoveType(client) & MOVETYPE_LADDER))
-					{
-						if (GetEntProp(client, Prop_Data, "m_nWaterLevel") <= 1)
-						{
-							buttons &= ~IN_JUMP;
-						}
-					}
-				}
-			}
-		}
-	}
 }
 
 // get a player's settings
@@ -1167,13 +1143,13 @@ public Native_GetClientSettings(Handle:plugin, numParams)
 // set a player's settings
 public Native_SetClientSettings(Handle:plugin, numParams)
 {
-	new client = GetNativeCell(1);
+	new client         = GetNativeCell(1);
 	g_Settings[client] = GetNativeCell(2);
 	
 	if(AreClientCookiesCached(client))
 	{
-		decl String:sSettingsCookie[16];
-		IntToString(g_Settings[client], sSettingsCookie, sizeof(sSettingsCookie));
-		SetClientCookie(client, g_hSettingsCookie, sSettingsCookie);
+		decl String:sSettings[16];
+		IntToString(g_Settings[client], sSettings, sizeof(sSettings));
+		SetClientCookie(client, g_hSettingsCookie, sSettings);
 	}
 }
