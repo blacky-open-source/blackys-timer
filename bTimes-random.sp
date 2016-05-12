@@ -19,7 +19,6 @@ public Plugin:myinfo =
 #include <bTimes-zones>
 #include <bTimes-random>
 #include <clientprefs>
-#include <basecomm>
 
 #define HUD_OFF (1<<0|1<<3|1<<4|1<<8)
 #define HUD_ON  0
@@ -37,15 +36,12 @@ new 	g_iNumSounds;
 
 new 	bool:g_isSpamming[MAXPLAYERS+1] = {false, ...};
 
-new 	UserMsg:g_SayText2;
-
 // Settings
 new 	Handle:g_JoinMessage,
 	Handle:g_AdminJoinMessage,
 	Handle:g_ChangeConMessage,
 	Handle:g_AllowAuto,
 	Handle:g_WeaponDespawn,
-	Handle:g_BlockGagged,
 	Handle:g_EZHop;
 	
 new	Handle:g_MessageStart,
@@ -56,8 +52,6 @@ new	Handle:g_MessageStart,
 new 	String:g_msg_start[128] = {""};
 new 	String:g_msg_varcol[128] = {"\x07B4D398"};
 new 	String:g_msg_textcol[128] = {"\x01"};
-
-new	Float:g_fOldAngle[MAXPLAYERS+1];
  
 public OnPluginStart()
 {
@@ -68,7 +62,6 @@ public OnPluginStart()
 	g_AdminJoinMessage	= CreateConVar("timer_adminjoinmessage", "Admin {name} joined.", "Sets the join message for admins.");
 	g_ChangeConMessage 	= CreateConVar("timer_changejoinmsg", "1", "Sets the join message using timer_joinmsg cvar", 0, true, 0.0, true, 1.0);
 	g_WeaponDespawn		= CreateConVar("timer_weapondespawn", "1", "Kills weapons a second after spawning to prevent flooding server.", 0, true, 0.0, true, 1.0);
-	g_BlockGagged		= CreateConVar("timer_blockgagged", "1", "Disallows gagged players to communicate through name changing.", 0, true, 0.0, true, 1.0);
 	g_MessageStart		= CreateConVar("timer_msgstart", "^556b2f[Timer] ^daa520- ", "Sets the start of all timer messages.");
 	g_MessageVar		= CreateConVar("timer_msgvar", "^B4D398", "Sets the color of variables in timer messages such as player names.");
 	g_MessageText		= CreateConVar("timer_msgtext", "^daa520", "Sets the color of general text in timer messages.");
@@ -94,10 +87,6 @@ public OnPluginStart()
 	AddAmbientSoundHook(AmbientSHook);
 	AddTempEntHook("Shotgun Shot", CSS_Hook_ShotgunShot);
 	
-	// User message hooks
-	g_SayText2 = GetUserMessageId("SayText2");
-	HookUserMessage(g_SayText2, Hook_SayText2, true);
-	
 	// Command hooks
 	AddCommandListener(DropItem, "drop");
 	
@@ -110,6 +99,7 @@ public OnPluginStart()
 	RegConsoleCmd("sm_hud", SM_Hud, "Toggles hud");
 	RegConsoleCmd("sm_keys", SM_Keys, "Toggles showing pressed keys");
 	RegConsoleCmd("sm_pad", SM_Keys, "Toggles showing pressed keys");
+	RegConsoleCmd("sm_showkeys", SM_Keys, "Toggles showing pressed keys");
 	RegConsoleCmd("sm_spec", SM_Spec, "Be a spectator");
 	RegConsoleCmd("sm_spectate", SM_Spec, "Be a spectator");
 	RegConsoleCmd("sm_maptime", SM_Maptime, "Shows how long the current map has been on.");
@@ -417,28 +407,6 @@ public Action:NormalSHook(clients[64], &numClients, String:sample[PLATFORM_MAX_P
 	}
 	
 	return (numClients > 0) ? Plugin_Changed : Plugin_Stop;
-}
-
-// Prevents gagged players from communicating through name change
-public Action:Hook_SayText2(UserMsg:msg_id, Handle:bf, const players[], playersNum, bool:reliable, bool:init)
-{
-	if(GetConVarBool(g_BlockGagged) == true)
-	{
-		new client = BfReadByte(bf);
-		BfReadByte(bf);
-		
-		decl String:s1[64];
-		BfReadString(bf, s1, sizeof(s1));
-		if(StrEqual(s1, "#Cstrike_Name_Change"))
-		{
-			if(BaseComm_IsClientGagged(client))
-			{
-				return Plugin_Handled;
-			}
-		}
-	}
-	
-	return Plugin_Continue;
 }
 
 public OnEntityCreated(entity, const String:classname[])
@@ -777,7 +745,7 @@ public Action:SM_Spec(client, args)
 	{
 		decl String:arg[128];
 		GetCmdArgString(arg, sizeof(arg));
-		new target = FindTarget(client, arg, false, false);
+		new target = FindTarget(client, arg, true, false);
 		if(target != -1)
 		{
 			if(client != target)
@@ -1015,32 +983,12 @@ GetKeysMessage(client, String:sKeys[64])
 	else
 		sBack[0] = 32;
 	
-	new Float:fAngles[3];
-	GetClientEyeAngles(client, fAngles);
-	
-	new Float:fAngleDiff = fAngles[1] - g_fOldAngle[client];
-	if (fAngleDiff > 180)
-		fAngleDiff -= 360;
-	else if(fAngleDiff < -180)
-		fAngleDiff += 360;
-	
-	if(fAngleDiff > 0)
-		FormatEx(sKeys, sizeof(sKeys), "   %s\n<       \n%s     %s\n    %s", sForward, sMoveleft, sMoveright, sBack);
-	else if(fAngleDiff < 0)
-		FormatEx(sKeys, sizeof(sKeys), "   %s\n       >\n%s     %s\n    %s", sForward, sMoveleft, sMoveright, sBack);
-	else
-		FormatEx(sKeys, sizeof(sKeys), "   %s\n        \n%s     %s\n    %s", sForward, sMoveleft, sMoveright, sBack);
-		
-	g_fOldAngle[client] = fAngles[1];
+	Format(sKeys, sizeof(sKeys), "   %s\n%s     %s\n    %s", sForward, sMoveleft, sMoveright, sBack);
 	
 	if(buttons & IN_DUCK)
-	{
 		Format(sKeys, sizeof(sKeys), "%s\nDUCK", sKeys);
-	}
 	else
-	{
 		Format(sKeys, sizeof(sKeys), "%s\n ", sKeys);
-	}
 }
 
 // Open sound control menu
@@ -1084,6 +1032,23 @@ public Menu_StopSound(Handle:menu, MenuAction:action, param1, param2)
 		if(iInfo == STOP_GUNS)
 			CheckHooks();
 		
+		if(iInfo == STOP_MUSIC && (g_Settings[param1] & STOP_MUSIC))
+		{
+			new ientity, String:sSound[128];
+			for (new i = 0; i < g_iNumSounds; i++)
+			{
+				ientity = EntRefToEntIndex(g_iSoundEnts[i]);
+				
+				if (ientity != INVALID_ENT_REFERENCE)
+				{
+					GetEntPropString(ientity, Prop_Data, "m_iszSound", sSound, sizeof(sSound));
+					EmitSoundToClient(param1, sSound, ientity, SNDCHAN_STATIC, SNDLEVEL_NONE, SND_STOP, 0.0, SNDPITCH_NORMAL, _, _, _, true);
+				}
+			}
+		}
+		
+		
+		
 		if(AreClientCookiesCached(param1))
 		{
 			decl String:sSoundCookie[16];
@@ -1115,11 +1080,7 @@ public Action:SM_Speed(client, args)
 			return Plugin_Handled;
 		}
 		
-		// Stop timer if the speed that is set isn't default speed
-		if(fSpeed != 1.0)
-		{
-			StopTimer(client);
-		}
+		StopTimer(client);
 		
 		// Set the speed
 		SetEntPropFloat(client, Prop_Data, "m_flLaggedMovementValue", fSpeed);
@@ -1166,6 +1127,8 @@ public Action:SM_Slow(client, args)
 
 public Action:SM_Normalspeed(client, args)
 {
+	StopTimer(client);
+	
 	// Set the speed
 	SetEntPropFloat(client, Prop_Data, "m_flLaggedMovementValue", 1.0);
 	
@@ -1217,27 +1180,6 @@ public Action:Hook_OnTakeDamage(victim, &attacker, &inflictor, &Float:damage, &d
  
 public Action:OnPlayerRunCmd(client, &buttons, &impulse, Float:vel[3], Float:angles[3], &weapon)
 {	
-	// auto bhop check
-	if(GetConVarBool(g_AllowAuto) == true)
-	{
-		if((g_Settings[client] & AUTO_BHOP) && IsPlayerAlive(client))
-		{
-			if (buttons & IN_JUMP)
-			{
-				if (!(GetEntityFlags(client) & FL_ONGROUND))
-				{
-					if (!(GetEntityMoveType(client) & MOVETYPE_LADDER))
-					{
-						if (GetEntProp(client, Prop_Data, "m_nWaterLevel") <= 1)
-						{
-							buttons &= ~IN_JUMP;
-						}
-					}
-				}
-			}
-		}
-	}
-	
 	// keys check
 	if(g_Settings[client] & SHOW_KEYS)
 	{
@@ -1256,6 +1198,27 @@ public Action:OnPlayerRunCmd(client, &buttons, &impulse, Float:vel[3], Float:ang
 			{
 				GetKeysMessage(Target, keys);
 				PrintCenterText(client, keys);
+			}
+		}
+	}
+	
+	// auto bhop check
+	if(GetConVarBool(g_AllowAuto) == true)
+	{
+		if((g_Settings[client] & AUTO_BHOP) && IsPlayerAlive(client))
+		{
+			if (buttons & IN_JUMP)
+			{
+				if (!(GetEntityFlags(client) & FL_ONGROUND))
+				{
+					if (!(GetEntityMoveType(client) & MOVETYPE_LADDER))
+					{
+						if (GetEntProp(client, Prop_Data, "m_nWaterLevel") <= 1)
+						{
+							buttons &= ~IN_JUMP;
+						}
+					}
+				}
 			}
 		}
 	}

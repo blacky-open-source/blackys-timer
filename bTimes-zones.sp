@@ -120,6 +120,8 @@ public OnPluginStart()
 	RegConsoleCmd("sm_restart", TeleportToMain, "Teleports you to the starting zone");
 	RegConsoleCmd("sm_respawn", TeleportToMain, "Teleports you to the starting zone");
 	RegConsoleCmd("sm_start", TeleportToMain, "Teleports you to the starting zone");
+	RegConsoleCmd("sm_end", TeleportToMainEnd, "Teleports your to the end zone");
+	RegConsoleCmd("sm_endb", TeleportToBonusEnd, "Teleports you to the bonus end zone");
 	
 	// Command listeners for easier team joining
 	AddCommandListener(Command_JoinTeam, "jointeam");
@@ -139,6 +141,14 @@ public APLRes:AskPluginLoad2(Handle:myself, bool:late, String:error[], err_max)
  
 public OnMapStart()
 {
+	// Re-init all zones
+	g_anticheat_count = 0;
+	g_freestyle_count = 0;
+	g_main_ready[0]   = false;
+	g_main_ready[1]   = false;
+	g_bonus_ready[0]  = false;
+	g_bonus_ready[1]  = false;
+	
 	// Check for t/ct spawns
 	new t  = FindEntityByClassname(-1, "info_player_terrorist");
 	new ct = FindEntityByClassname(-1, "info_player_counterterrorist");
@@ -742,6 +752,23 @@ public Action:TeleportToMain(client, args)
 	return Plugin_Handled;
 }
 
+public Action:TeleportToMainEnd(client, args)
+{
+	if(g_main_ready[1] == true)
+	{
+		StopTimer(client);
+		TeleportToZone(client, g_main[1][0], g_main[1][7]);
+	}
+	else
+	{
+		PrintColorText(client, "%s%sThe end zone hasn't been added yet",
+			g_msg_start,
+			g_msg_textcol);
+	}
+			
+	return Plugin_Handled;
+}
+
 public Action:TeleportToBonus(client, args)
 {
 	if(g_bonus_ready[0] == true)
@@ -756,6 +783,23 @@ public Action:TeleportToBonus(client, args)
 			g_msg_textcol);
 	}
 
+	return Plugin_Handled;
+}
+
+public Action:TeleportToBonusEnd(client, args)
+{
+	if(g_bonus_ready[1] == true)
+	{
+		StopTimer(client);
+		TeleportToZone(client, g_bonus[1][0], g_bonus[1][7]);
+	}
+	else
+	{
+		PrintColorText(client, "%s%sThe bonus end zone hasn't been added",
+			g_msg_start,
+			g_msg_textcol);
+	}
+			
 	return Plugin_Handled;
 }
 
@@ -1322,15 +1366,7 @@ public DB_AddZone_Callback2(Handle:owner, Handle:hndl, const String:error[], any
 * Loads all the zones for a map when it starts
 */
 DB_LoadZones()
-{
-	// Re-init all zones
-	g_anticheat_count = 0;
-	g_freestyle_count = 0;
-	g_main_ready[0]   = false;
-	g_main_ready[1]   = false;
-	g_bonus_ready[0]  = false;
-	g_bonus_ready[1]  = false;
-	
+{	
 	// Select zones query
 	decl String:query[512];
 	Format(query, sizeof(query), "SELECT point00, point01, point02, point10, point11, point12, Type FROM zones WHERE MapID=(SELECT MapID FROM maps WHERE MapName='%s')", 
@@ -1444,42 +1480,14 @@ public Action:OnPlayerRunCmd(client, &buttons, &impulse, Float:vel[3], Float:ang
 			for(new i=0; i<g_anticheat_count; i++)
 				if(IsInsideZone(client, g_anticheat[i]))
 				{
-					if(IsBeingTimed(client, 2))
+					if(IsBeingTimed(client, TIMER_ANY))
 					{
+						StopTimer(client);
 						PrintColorText(client, "%s%sYour timer has been stopped for using a shortcut.",
 							g_msg_start,
 							g_msg_textcol);
-						StopTimer(client);
 					}
 				}
-			
-			if(IsBeingTimed(client, 0))
-			{
-				if(GetClientStyle(client) == 1 || GetClientStyle(client) == 2)
-				{
-					for(new i=0; i<g_freestyle_count; i++)
-					{
-						new bool:inside = IsInsideZone(client, g_freestyle[i]);
-						if(inside && !g_freestyle_info[client])
-						{
-							PrintColorText(client, "%s%sYou have entered a free style zone. You are free to use all movement keys.",
-								g_msg_start,
-								g_msg_textcol);
-						}
-						else if(!inside && g_freestyle_info[client])
-						{
-							PrintColorText(client, "%s%sYou have left a free style zone. Your movement keys are restricted again.",
-								g_msg_start,
-								g_msg_textcol);
-						}
-						g_freestyle_info[client] = inside;
-					}
-				}
-			}
-			else
-			{
-				g_freestyle_info[client] = false;
-			}
 		}
 	}
 }

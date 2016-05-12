@@ -28,17 +28,20 @@ new const String:g_CommandList[][] =
 	"sm_bonus      - Teleports you to the bonus area.",
 	"sm_br         - Teleports you to the bonus area.",
 	"sm_brank      - Shows the overall bonus rank of you or a specified player.",
-	"sm_btime      - Like sm_time but for Bonus times.",
+	"sm_btime      - Like sm_time but for bonus times.",
 	"sm_btop       - Shows the bonus overall ranks.",
 	"sm_bwr        - Shows bonus record for a map.",
+	"sm_cchelp     - View the help for colored chat settings.",
+	"sm_ccmsg      - Change your chat message color.",
+	"sm_ccname     - Change colored name.",
 	"sm_changes    - See the changes in the newer timer version.",
+	"sm_chatranks  - Shows the chat ranking tags and the ranks required to get them.",
 	"sm_checkpoint - Opens the checkpoint menu.",
-	"sm_colorhelp  - View the help for colored chat settings.",
-	"sm_colormsg   - Change your chat message color.",
-	"sm_colorname  - Change colored name.",
 	"sm_commands   - Shows the command list.",
 	"sm_cp         - Opens the checkpoint menu.",
 	"sm_display    - Shows all info in the hint text when being timed.",
+	"sm_end        - Teleports you to the end zone.",
+	"sm_endb       - Teleports you to the bonus end zone.",
 	"sm_fast       - Sets your speed to fast (2.0).",
 	"sm_fullhud    - Shows all info in the hint text when being timed.",
 	"sm_hide       - Toggles hide.",
@@ -69,14 +72,17 @@ new const String:g_CommandList[][] =
 	"sm_practice   - Puts you in noclip. Stops your timer.",
 	"sm_r          - Teleports you to the starting zone.",
 	"sm_rank       - Shows the overall rank of you or a specified player.",
+	"sm_rankings   - Shows the chat ranking tags and the ranks required to get them.",
 	"sm_rankn      - Shows the overall normal rank of you or a specified player.",
+	"sm_ranks      - Shows the chat ranking tags and the ranks required to get them.",
 	"sm_ranksw     - Shows the overall sideways rank of you or a specified player.",
 	"sm_rankw      - Shows the overall w-only rank of you or a specified player.",
 	"sm_respawn    - Teleports you to the starting zone.",
 	"sm_restart    - Teleports you to the starting zone.",
-	"sm_resume     - Unpauses your timer and unfreezes you.",
+	"sm_resume     - Resumes your timer (same as sm_unpause).",
 	"sm_save       - Saves a new checkpoint.",
 	"sm_setspeed   - Changes your speed to the specified value.",
+	"sm_showkeys   - Toggles showing your pressed keys.",
 	"sm_sideways   - Switches you to sideways timer.",
 	"sm_slow       - Sets your speed to slow (0.5).",
 	"sm_sound      - Control different sounds you want to hear when playing.",
@@ -100,7 +106,7 @@ new const String:g_CommandList[][] =
 	"sm_tpto       - Teleports you to a player.",
 	"sm_truevel    - Toggles between 2D and 3D velocity meters.",
 	"sm_unhide     - Toggles hide.",
-	"sm_unpause    - Unpauses your timer.",
+	"sm_unpause    - Unpauses your timer (same as sm_resume).",
 	"sm_velocity   - Toggles between 2D and 3D velocity meters.",
 	"sm_w          - Switches you to W-Only timer.",
 	"sm_wonly      - Switches you to W-Only timer.",
@@ -112,26 +118,65 @@ new const String:g_CommandList[][] =
 
 new const String:g_ChangeLog[][] =
 {
-	"Fixed a bug where ghost wouldn't delete.",
-	"Fixed WR sounds.",
-	"Added chat ranks/custom chat names. !colorhelp for more info",
-	"Mapsleft shows number of maps left in title.",
-	"Expanded on !time command. \"!time @3\" will show who has #3 on the map.",
-	"!keys now shows what direction a player is turning."
+	"- Fixed a bug where ghost jitters when it is paused.",
+	"- The ghost should appear in every map now.",
+	"- Fixed a bug to cheat times.",
+	"- Fixed !specs/!speclist/!specinfo bug.",
+	"- Fixed a bug on the right side where it doesn't show the correct 'Best:' time.",
+	"- Added separate join messages for admins and non-admins.",
+	"- Made some SQL related commands load faster.",
+	"- Added the !search command so you can search for specific commands in the !thelp list.",
+	"- Added this changelog feature.",
+	"- Improved logging.",
+	"- Added new commands !pause and !resume.",
+	"- Added new commands !lowgrav and !normalgrav.",
+	"- Added new commands !speed, !setspeed, !normalspeed, !fast, and !slow.",
+	"- Fixed a bug on sideways and w-only.",
+	"\nb7 Changes: \n",
+	"- !keys now shows what direction a player is turning.",
+	"- Expanded on !time command. \"!time @3\" will show who has #3 on the map.",
+	"- Mapsleft shows number of maps left in title.",
+	"- Added chat ranks/custom chat names. !cchelp for more info",
+	"- Fixed WR sounds.",
+	"- Fixed a bug where ghost wouldn't delete.",
+	"\nv1.1 Changes: \n",
+	"- Mapsdone shows number of maps done in the title.",
+	"- !keys no longer shows what direction a player is turning.",
+	"- Player info should load faster, allowing zones to load quicker.",
+	"- Remade custom chat ranks to work better. sm_cchelp for more info.",
+	"\nv1.2 Changes: \n",
+	"- Properly escaped names (including custom chat names/messages) for SQL insertion",
+	"- Fixed possible lag caused by timer around when userid's reach the 1000s.",
+	"- Fixed ghost not saving sometimes when someone gets the new top time (hopefully).",
+	"\nv1.3 Changes: \n",
+	"- Made some SQL related commands load faster.",
+	"- Fixed a bug to cheat with the !speed command on some maps that slow your speed.",
+	"- Modified how chat ranks work a bit.",
+	"- You can nominate maps through things like !mapsleft.",
+	"- Fixed a bug where the incorrect position you have on the map would show.",
+	"- Fixed a bug where the ghost would not overwrite but append on the previous ghost.",
+	"- Added commands !end and !endb so you can teleport to the end zones.",
+	"- Implemented all/dead-chat inside the timer so an external plugin is unnecessary.",
+	"- When you are in a free style zone, it will say (FS) in the hint text (bottom center)",
+	"- Added commands !rankings, !ranks, and !chatranks to see a list of all the chat ranks.",
+	"- Turning music off in the !sounds menu will turn off music that's already playing.",
+	"- Map time left shows in the right where spectators and your best times show.",
+	"- Fixed a bug where unplayable maps would show on things like !mapsleft.",
+	"\n1.3.1 Changes: \n",
+	"- Fixed a memory leak that may have caused the server to frequently crash."
 };
 
 new Handle:g_DB = INVALID_HANDLE;
 
 new 	String:g_mapname[64],
-	g_clientID[MAXPLAYERS+1];
+	g_clientID[MAXPLAYERS+1],
+	Handle:g_MapList;
 	
 new	bool:g_IsSpamming[MAXPLAYERS+1] = {false, ...};
 	
-// Play time
+// Playtimes
 new	Float:g_JoinStart[MAXPLAYERS+1];
-	
-new	Float:g_MapStart,
-	Float:g_MapPlaytime;
+new	Float:g_MapStart;
 	
 // Chat
 new 	String:g_msg_start[128] = {""};
@@ -139,15 +184,23 @@ new 	String:g_msg_varcol[128] = {"\x07B4D398"};
 new 	String:g_msg_textcol[128] = {"\x01"};
 
 // Forwards
-new	Handle:g_fwdMapIDPostCheck;
+new	Handle:g_fwdMapIDPostCheck,
+	Handle:g_fwdPlayerIDLoaded;
+
+// UserID/PlayerID array
+//new	Handle:g_hPlayerID,
+new	Handle:g_hTriePlayerID;
 
 public OnPluginStart()
 {
+	// Connect
 	DB_Connect();
 	
+	// Events
 	HookEvent("player_changename", Event_PlayerChangeName, EventHookMode_Pre);
 	HookEvent("player_team", Event_PlayerTeam_Post, EventHookMode_Post);
 	
+	// Commands
 	RegConsoleCmd("sm_mostplayed", SM_TopMaps, "Displays the most played maps");
 	RegConsoleCmd("sm_lastplayed", SM_LastPlayed, "Shows the last played maps");
 	RegConsoleCmd("sm_thelp", SM_THelp, "Shows the timer commands.");
@@ -155,8 +208,14 @@ public OnPluginStart()
 	RegConsoleCmd("sm_search", SM_Search, "Search the command list for the given string of text.");
 	RegConsoleCmd("sm_changes", SM_Changes, "See the changes in the newer timer version.");
 	
+	// Command listeners
 	AddCommandListener(CMD_Say, "say");
 	AddCommandListener(CMD_Say, "say_team");
+	
+	// Init userid array
+	//g_hPlayerID = CreateArray(2);
+	
+	g_hTriePlayerID = CreateTrie();
 }
 
 // Create natives
@@ -168,6 +227,8 @@ public APLRes:AskPluginLoad2(Handle:myself, bool:late, String:error[], err_max)
 	CreateNative("SetIsSpamming", Native_SetIsSpamming);
 	
 	g_fwdMapIDPostCheck = CreateGlobalForward("OnMapIDPostCheck", ET_Event);
+	g_fwdPlayerIDLoaded = CreateGlobalForward("OnPlayerIDLoaded", ET_Event, Param_Cell);
+	
 	return APLRes_Success;
 }
 
@@ -177,13 +238,10 @@ public OnMapStart()
 	
 	g_MapStart = GetEngineTime();
 	
+	g_MapList = ReadMapList();
+	
 	// Creates map if it doesn't exist, sets map as recently played, and loads map playtime
 	CreateCurrentMapID();
-}
-
-public OnMapIDPostCheck()
-{
-	DB_LoadMapPlaytime();
 }
 
 public OnMapEnd()
@@ -199,6 +257,52 @@ public OnClientDisconnect(client)
 	g_clientID[client] = 0;
 }
 
+public bool:OnClientConnect(client)
+{
+	// Load PlayerID method 1 (adt_arrays)
+	/*
+	g_clientID[client] = 0;
+	if(!IsFakeClient(client))
+	{
+		new iSize  = GetArraySize(g_hPlayerID);
+		new userid = GetClientUserId(client);
+		
+		for(new i=0; i<iSize; i++)
+		{
+			if(GetArrayCell(g_hPlayerID, i, 0) == userid)
+			{
+				g_clientID[client] = GetArrayCell(g_hPlayerID, i, 1);
+				
+				// Start forward to notify other plugins that a playerid was found for the client
+				Call_StartForward(g_fwdPlayerIDLoaded);
+				Call_PushCell(client);
+				Call_Finish();
+				
+				return true;
+			}
+		}
+	}
+	return true;
+	*/
+	
+	// Load PlayerID method 2 (adt_tries)
+	g_clientID[client] = 0;
+	
+	new userid = GetClientUserId(client);
+	decl String:sUserID[32];
+	Format(sUserID, sizeof(sUserID), "%d", userid);
+	
+	if(GetTrieValue(g_hTriePlayerID, sUserID, g_clientID[client]))
+	{
+		// Start forward to notify other plugins that a playerid was found for the client
+		Call_StartForward(g_fwdPlayerIDLoaded);
+		Call_PushCell(client);
+		Call_Finish();
+	}
+	
+	return true;
+}
+
 public OnClientPutInServer(client)
 {
 	g_JoinStart[client] = GetEngineTime();
@@ -206,7 +310,7 @@ public OnClientPutInServer(client)
 
 public OnClientAuthorized(client)
 {
-	if(!IsFakeClient(client))
+	if(!IsFakeClient(client) && (g_clientID[client] == 0))
 	{
 		CreatePlayerID(client);
 	}
@@ -279,7 +383,7 @@ public Action:CMD_Say(client, const String:command[], argc)
 					FakeClientCommand(client, "sm_r");
 					return Plugin_Handled;
 				}
-				else if(StrEqual(arg, "rank") || StrEqual(arg, "brank") || StrEqual(arg, "rankw") || StrEqual(arg, "ranksw"))
+				else if(StrEqual(arg, "rank") || StrEqual(arg, "brank") || StrEqual(arg, "rankw") || StrEqual(arg, "ranksw") || StrEqual(arg, "rankn"))
 				{
 					FakeClientCommand(client, "sm_%s", arg);
 					return Plugin_Handled;
@@ -330,7 +434,7 @@ public TopMaps_Callback(Handle:owner, Handle:hndl, String:error[], any:client)
 					{
 						SQL_FetchString(hndl, 0, mapname, sizeof(mapname));
 						
-						if(IsMapValid(mapname))
+						if(FindStringInArray(g_MapList, mapname) != -1)
 						{
 							FormatPlayerTime(float(iTime), timeplayed, sizeof(timeplayed), false, 1);
 							SplitString(timeplayed, ".", timeplayed, sizeof(timeplayed));
@@ -341,7 +445,6 @@ public TopMaps_Callback(Handle:owner, Handle:hndl, String:error[], any:client)
 					}
 				}
 				
-				SetMenuExitBackButton(menu, true);
 				SetMenuExitButton(menu, true);
 				DisplayMenu(menu, client, MENU_TIME_FOREVER);
 			}
@@ -357,8 +460,10 @@ public Menu_TopMaps(Handle:menu, MenuAction:action, param1, param2)
 {
 	if (action == MenuAction_Select)
 	{
-		//new String:info[32];
-		//GetMenuItem(menu, param2, info, sizeof(info));
+		decl String:info[32];
+		GetMenuItem(menu, param2, info, sizeof(info));
+		
+		FakeClientCommand(param1, "sm_nominate %s", info);
 	}
 	else if (action == MenuAction_End)
 		CloseHandle(menu);
@@ -400,7 +505,7 @@ public LastPlayed_Callback(Handle:owner, Handle:hndl, String:error[], any:client
 				{
 					SQL_FetchString(hndl, 0, sMapName, sizeof(sMapName));
 					
-					if(IsMapValid(sMapName))
+					if(FindStringInArray(g_MapList, sMapName) != -1)
 					{
 						FormatTime(sDate, sizeof(sDate), "%x", iTime);
 						FormatTime(sTimeOfDay, sizeof(sTimeOfDay), "%X", iTime);
@@ -412,7 +517,6 @@ public LastPlayed_Callback(Handle:owner, Handle:hndl, String:error[], any:client
 				}
 			}
 			
-			SetMenuExitBackButton(menu, true);
 			SetMenuExitButton(menu, true);
 			DisplayMenu(menu, client, MENU_TIME_FOREVER);
 		}
@@ -427,8 +531,10 @@ public Menu_LastPlayed(Handle:menu, MenuAction:action, param1, param2)
 {
 	if (action == MenuAction_Select)
 	{
-		//new String:info[32];
-		//GetMenuItem(menu, param2, info, sizeof(info));
+		decl String:info[32];
+		GetMenuItem(menu, param2, info, sizeof(info));
+		
+		FakeClientCommand(param1, "sm_nominate %s", info);
 	}
 	else if (action == MenuAction_End)
 		CloseHandle(menu);
@@ -441,15 +547,17 @@ public Action:Event_PlayerChangeName(Handle:event, const String:name[], bool:don
 	new PlayerID = GetClientID(client);
 	if(GetClientID(client) != 0)
 	{
-		decl String:newname[(MAX_NAME_LENGTH*2)+1], String:query[128];
+		decl String:newname[MAX_NAME_LENGTH], String:query[128];
 		
 		GetEventString(event, "newname", newname, sizeof(newname));
 		
+		decl String:sEscapedName[2 * MAX_NAME_LENGTH + 1];
+			
 		SQL_LockDatabase(g_DB);
-		SQL_EscapeString(g_DB, newname, newname, sizeof(newname));
+		SQL_EscapeString(g_DB, newname, sEscapedName, sizeof(sEscapedName));
 		SQL_UnlockDatabase(g_DB);
 		
-		Format(query, sizeof(query), "UPDATE players SET User='%s' WHERE PlayerID=%d", newname, PlayerID);
+		Format(query, sizeof(query), "UPDATE players SET User='%s' WHERE PlayerID=%d", sEscapedName, PlayerID);
 		SQL_TQuery(g_DB, Event_PlayerChangeName_Callback, query);
 	}
 }
@@ -466,7 +574,7 @@ public Action:SM_Changes(client, args)
 {
 	if(GetCmdReplySource() == SM_REPLY_TO_CHAT)
 	{
-		PrintColorText(client, "%s%sLook in console for a list of changes in the newer timer version.",
+		PrintColorText(client, "%s%sLook in console for a list of all timer changes.",
 			g_msg_start,
 			g_msg_textcol);
 	}
@@ -485,8 +593,10 @@ DB_Connect()
 {
 	if(g_DB != INVALID_HANDLE)
 		CloseHandle(g_DB);
+	
 	new String:error[255];
 	g_DB = SQL_Connect("timer", true, error, sizeof(error));
+	
 	if(g_DB == INVALID_HANDLE)
 	{
 		LogError(error);
@@ -505,7 +615,7 @@ DB_Connect()
 		SQL_TQuery(g_DB, DB_Connect_Callback, query);
 		
 		// Create players table
-		Format(query, sizeof(query), "CREATE TABLE IF NOT EXISTS players(PlayerID INTEGER NOT NULL AUTO_INCREMENT, SteamID TEXT, User Text, Playtime INTEGER NOT NULL, PRIMARY KEY (PlayerID))");
+		Format(query, sizeof(query), "CREATE TABLE IF NOT EXISTS players(PlayerID INTEGER NOT NULL AUTO_INCREMENT, SteamID TEXT, User Text, Playtime INTEGER NOT NULL, ccname TEXT, ccmsgcol TEXT, ccuse INTEGER, PRIMARY KEY (PlayerID))");
 		SQL_TQuery(g_DB, DB_Connect_Callback, query);
 		
 		// Create times table
@@ -582,24 +692,26 @@ public DB_CreatePlayerID_Callback1(Handle:owner, Handle:hndl, const String:error
 	{
 		if(IsClientConnected(client) && !IsFakeClient(client))
 		{
-			decl String:query[256], String:authid[32], String:name[(MAX_NAME_LENGTH*2)+1];
+			decl String:query[256], String:authid[32], String:name[MAX_NAME_LENGTH];
 			
 			GetClientName(client, name, sizeof(name));
 			
+			decl String:sEscapedName[(2 * MAX_NAME_LENGTH) + 1];
+			
 			SQL_LockDatabase(g_DB);
-			SQL_EscapeString(g_DB, name, name, sizeof(name));
+			SQL_EscapeString(g_DB, name, sEscapedName, sizeof(sEscapedName));
 			SQL_UnlockDatabase(g_DB);
 			
 			GetClientAuthString(client, authid, sizeof(authid));
 			
 			if(SQL_GetRowCount(hndl) == 0)
 			{
-				Format(query, sizeof(query), "INSERT INTO players (SteamID, User) VALUES ('%s', '%s')", authid, name);
+				Format(query, sizeof(query), "INSERT INTO players (SteamID, User) VALUES ('%s', '%s')", authid, sEscapedName);
 				SQL_TQuery(g_DB, DB_CreatePlayerID_Callback2, query, client);
 			}
 			else
 			{
-				Format(query, sizeof(query), "UPDATE players SET User='%s' WHERE SteamID='%s'", name, authid);
+				Format(query, sizeof(query), "UPDATE players SET User='%s' WHERE SteamID='%s'", sEscapedName, authid);
 				SQL_TQuery(g_DB, DB_CreatePlayerID_Callback2, query, client);
 			}
 		}
@@ -616,16 +728,13 @@ public DB_CreatePlayerID_Callback2(Handle:owner, Handle:hndl, const String:error
 	{
 		if(IsClientConnected(client) && !IsFakeClient(client))
 		{
-			decl String:name[MAX_NAME_LENGTH], String:authid[32];
+			LogMessage("PlayerID entry for %L updated", client);
 			
-			GetClientName(client, name, sizeof(name));
-			GetClientAuthString(client, authid, sizeof(authid));
-			
-			LogMessage("Player ID entry for %s <%s> updated", name, authid);
+			decl String:sAuth[32];
+			GetClientAuthString(client, sAuth, sizeof(sAuth));
 			
 			decl String:query[512];
-			
-			Format(query, sizeof(query), "SELECT PlayerID FROM players WHERE SteamID = '%s'", authid);
+			Format(query, sizeof(query), "SELECT PlayerID FROM players WHERE SteamID = '%s'", sAuth);
 			SQL_TQuery(g_DB, DB_CreatePlayerID_Callback3, query, client);
 		}
 	}
@@ -644,8 +753,20 @@ public DB_CreatePlayerID_Callback3(Handle:owner, Handle:hndl, const String:error
 			SQL_FetchRow(hndl);
 			g_clientID[client] = SQL_FetchInt(hndl, 0);
 			
-			DB_LoadPlayerInfo(client);
-			SetClientRank(client);
+			// Push userid and playerid in array
+			//new idarray[2];
+			//idarray[0] = GetClientUserId(client);
+			//idarray[1] = g_clientID[client];
+			//PushArrayArray(g_hPlayerID, idarray, sizeof(idarray));
+			
+			decl String:sUserID[32];
+			Format(sUserID, sizeof(sUserID), "%d", GetClientUserId(client));
+			SetTrieValue(g_hTriePlayerID, sUserID, g_clientID[client]);
+			
+			// Start forward to notify other plugins that a player's id was found
+			Call_StartForward(g_fwdPlayerIDLoaded);
+			Call_PushCell(client);
+			Call_Finish();
 		}
 	}
 }
@@ -719,10 +840,10 @@ public Native_GetPlaytime(Handle:plugin, numParams)
 
 DB_SaveMapPlaytime()
 {
-	decl String:query[128];
+	decl String:query[256];
 
-	Format(query, sizeof(query), "UPDATE maps SET MapPlaytime=%d+%d WHERE MapName='%s'",
-		RoundToFloor(g_MapPlaytime),
+	Format(query, sizeof(query), "UPDATE maps SET MapPlaytime=(SELECT MapPlaytime FROM (SELECT * FROM maps) AS x WHERE MapName='%s')+%d WHERE MapName='%s'",
+		g_mapname,
 		RoundToFloor(GetEngineTime()-g_MapStart),
 		g_mapname);
 		
@@ -750,30 +871,6 @@ public DB_SetMapLastPlayed_Callback(Handle:owner, Handle:hndl, String:error[], a
 {
 	if(hndl == INVALID_HANDLE)
 		LogError(error);
-}
-
-DB_LoadMapPlaytime()
-{
-	decl String:query[128];
-	Format(query, sizeof(query), "SELECT MapPlaytime FROM maps WHERE MapName='%s'",
-		g_mapname);
-	SQL_TQuery(g_DB, DB_LoadMapPlaytime_Callback, query);
-}
-
-public DB_LoadMapPlaytime_Callback(Handle:owner, Handle:hndl, String:error[], any:data)
-{
-	if(hndl != INVALID_HANDLE)
-	{
-		if(SQL_GetRowCount(hndl) != 0)
-		{
-			SQL_FetchRow(hndl);
-			g_MapPlaytime = float(SQL_FetchInt(hndl, 0));
-		}
-	}
-	else
-	{
-		LogError(error);
-	}
 }
 
 public Action:SM_THelp(client, args)

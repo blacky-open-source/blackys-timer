@@ -32,8 +32,11 @@ new 	Float:g_starttime;
 // Cvars
 new 	Handle:g_hGhostClanTag;
 
+// Model
+new	g_GhostModel;
+
 public OnPluginStart()
-{
+{	
 	// Connect to the database
 	DB_Connect();
 	
@@ -41,6 +44,9 @@ public OnPluginStart()
 	g_hGhostClanTag = CreateConVar("timer_ghosttag", "Ghost ::", "The replay bot's clan tag for the scoreboard", 0);
 	
 	AutoExecConfig(true, "ghost", "timer");
+	
+	// Events
+	HookEvent("player_spawn", Event_PlayerSpawn, EventHookMode_Post);
 	
 	// Create admin command that deletes the ghost
 	RegAdminCmd("sm_deleteghost", SM_DeleteGhost, ADMFLAG_CHEATS, "Deletes the ghost.");
@@ -111,6 +117,19 @@ public bool:OnClientConnect(client, String:rejectmsg[], maxlen)
 		CS_RespawnPlayer(g_ghost);
 	}
 	return true;
+}
+
+public Action:Event_PlayerSpawn(Handle:event, const String:name[], bool:dontBroadcast)
+{
+	new client = GetClientOfUserId(GetEventInt(event, "userid"));
+	
+	if(IsClientInGame(client))
+	{
+		if(client == g_ghost)
+		{
+			//SetEntityModel(client, "models/player/vad36dishonored/corvo.mdl");
+		}
+	}
 }
 
 public Action:SM_DeleteGhost(client, args)
@@ -290,45 +309,37 @@ public LoadGhost_Callback2(Handle:owner, Handle:hndl, String:error[], any:data)
 
 public Native_SaveGhost(Handle:plugin, numParams)
 {
-	new client = GetNativeCell(1);
+	new client     = GetNativeCell(1);
 	new Float:time = GetNativeCell(2);
 	
 	// Delete existing ghost for the map
 	decl String:sPath[PLATFORM_MAX_PATH];
 	BuildPath(Path_SM, sPath, sizeof(sPath), "data/btimes/%s.rec", g_mapname);
-	if(DirExists(sPath))
+	if(FileExists(sPath))
+	{
 		DeleteFile(sPath);
+	}
 	
 	// Open a file for writing
 	new Handle:hFile = OpenFile(sPath, "w");
-	new iSize = GetArraySize(g_frame[client]);
-	decl String:buffer[512];
 	
 	// save playerid to file to grab name and time for later times map is played
 	decl String:playerid[16];
 	IntToString(GetClientID(client), playerid, sizeof(playerid));
 	WriteFileLine(hFile, playerid);
 	
-	// Write all data to file and change ghost array
-	ResizeArray(g_hGhost, GetArraySize(g_frame[client]));
-	
+	new iSize = GetArraySize(g_frame[client]);
+	decl String:buffer[512];
 	new Float:data[5];
+	
+	ClearArray(g_hGhost);
 	for(new i=0; i<iSize; i++)
 	{
-		for(new i2=0; i2<5; i2++)
-		{
-			data[i2] = GetArrayCell(g_frame[client], i, i2);
-		}
+		GetArrayArray(g_frame[client], i, data, 5);
+		PushArrayArray(g_hGhost, data, 5);
 		
-		Format(buffer, sizeof(buffer), "%f|%f|%f|%f|%f", data[0], data[1], data[2], data[3], data[4]);
-			
+		FormatEx(buffer, sizeof(buffer), "%f|%f|%f|%f|%f", data[0], data[1], data[2], data[3], data[4]);
 		WriteFileLine(hFile, buffer);
-		
-		SetArrayCell(g_hGhost, i, data[0], 0);
-		SetArrayCell(g_hGhost, i, data[1], 1);
-		SetArrayCell(g_hGhost, i, data[2], 2);
-		SetArrayCell(g_hGhost, i, data[3], 3);
-		SetArrayCell(g_hGhost, i, data[4], 4);
 	}
 	CloseHandle(hFile);
 	

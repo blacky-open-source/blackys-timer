@@ -364,8 +364,8 @@ OpenTeleportMenu(client)
 {
 	new Handle:menu = CreateMenu(Menu_Teleport);
 	SetMenuTitle(menu, "Teleport");
-	AddMenuItem(menu, "lastused", "TP to last used");
-	AddMenuItem(menu, "lastsaved", "TP to last saved");
+	AddMenuItem(menu, "lastused", "Last used");
+	AddMenuItem(menu, "lastsaved", "Last saved");
 	
 	decl String:tpString[8], String:infoString[8];
 	for(new i=0; i < g_cpcount[client]; i++)
@@ -507,7 +507,7 @@ public Action:SM_Save(client, argS)
 
 SaveCheckpoint(client)
 {
-	if(g_cpcount[client] <= 9)
+	if(g_cpcount[client] < 10)
 	{
 		GetEntPropVector(client, Prop_Send, "m_vecOrigin", g_cp[client][g_cpcount[client]][0]);
 		g_cp[client][g_cpcount[client]][1][0] = GetEntPropFloat(client, Prop_Send, "m_vecVelocity[0]");

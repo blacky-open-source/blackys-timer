@@ -1,4 +1,4 @@
-#define VERSION "1.1"
+#define VERSION "1.3"
 
 // Timer enums
 enum
@@ -8,6 +8,7 @@ enum
 	TIMER_ANY
 };
 
+// Style enums
 enum
 {
 	STYLE_NORMAL,
@@ -33,13 +34,54 @@ enum
 };
 
 // Core natives
+
+/*
+* Gets a client's player id in the database.
+* 
+* @param client		Client index.
+* 
+* @return			Client's player id.
+*/
 native GetClientID(client);
+
+/*
+* Get a client's current session playtime.
+* 
+* @param client		Client index.
+* 
+* @return 			Client's current map session playtime
+*/
 native Float:GetPlaytime(client);
+
+/*
+* Gets if a client is spamming SQL related commands or not.
+* 
+* @param client		Client index.
+* 
+* @return 			True if client is spamming; false otherwise.
+*/
 native bool:IsSpamming(client);
+
+/*
+* Sets a client as spamming commands.
+* 
+* @param client		Client index.
+* 
+* @noreturn
+*/
 native SetIsSpamming(client, Float:BlockTime);
 
 // Core forwards
+
+/*
+* 
+*/
 forward OnMapIDPostCheck();
+
+/*
+* 
+*/
+forward OnPlayerIDLoaded(client);
 
 stock PrintColorTextAll(const String:msg[], any:...)
 {

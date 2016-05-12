@@ -11,7 +11,6 @@ public Plugin:myinfo =
 	url = "http://steamcommunity.com/id/blaackyy/"
 }
 
-#include <sourcemod>
 #include <bTimes-zones>
 #include <bTimes-timer>
 #include <bTimes-ranks>
@@ -26,7 +25,8 @@ public Plugin:myinfo =
 new 	Handle:g_DB = INVALID_HANDLE;
 
 // current map info
-new 	String:g_mapname[64];
+new 	String:g_mapname[64],
+	Handle:g_MapList;
 new 	Float:g_WorldRecord[3],
 	Float:g_bWorldRecord;
 
@@ -66,6 +66,10 @@ new	String:g_msg_start[128],
 	String:g_msg_varcol[128],
 	String:g_msg_textcol[128];
 	
+// Warning
+new	Float:g_fWarningTime[MAXPLAYERS+1];
+	
+// Sync measurement
 new	Float:g_fOldAngle[MAXPLAYERS+1],
 	g_totalSync[MAXPLAYERS+1],
 	g_goodSync[MAXPLAYERS+1],
@@ -81,11 +85,17 @@ new 	Handle:g_hTimerDisplay,
 	Handle:g_hAllowYawspeed,
 	Handle:g_hAllowPause,
 	Handle:g_hChangeClanTag,
-	Handle:g_hTimerChangeClanTag;
+	Handle:g_hTimerChangeClanTag,
+	Handle:g_hShowTimeLeft;
 	
 // All map times
 new	Handle:g_hTimes[3],
-	Handle:g_hBTimes;
+	Handle:g_hTimesUsers[3],
+	Handle:g_hBTimes,
+	Handle:g_hBTimesUsers;
+	
+// Forwards
+new	Handle:g_fwdOnTimerFinished;
 
 public OnPluginStart()
 {
@@ -97,6 +107,7 @@ public OnPluginStart()
 	g_hAllowYawspeed = CreateConVar("timer_allowyawspeed", "0", "Lets players use +left/+right commands without stopping their timer.", 0, true, 0.0, true, 1.0);
 	g_hAllowPause	 = CreateConVar("timer_allowpausing", "1", "Lets players use the !pause/!unpause commands.", 0, true, 0.0, true, 1.0);
 	g_hChangeClanTag = CreateConVar("timer_changeclantag", "1", "Means player clan tags will show their current timer time.", 0, true, 0.0, true, 1.0);
+	g_hShowTimeLeft  = CreateConVar("timer_showtimeleft", "1", "Shows the time left until a map change on the right side of player screens.", 0, true, 0.0, true, 1.0);
 	
 	HookConVarChange(g_hHintSpeed, OnTimerHintSpeedChanged);
 	HookConVarChange(g_hChangeClanTag, OnChangeClanTagChanged);
@@ -116,15 +127,22 @@ public OnPluginStart()
 	
 	// Player commands
 	RegConsoleCmd("sm_stop", SM_StopTimer, "Stops your timer.");
+	
 	RegConsoleCmd("sm_wr", SM_WorldRecord, "Shows all the times for the current map.");
 	RegConsoleCmd("sm_wrw", SM_WorldRecordW, "Shows all the W-Only times for the current map.");
 	RegConsoleCmd("sm_wrsw", SM_WorldRecordSW, "Shows all the sideways times for the current map.");
 	RegConsoleCmd("sm_bwr", SM_BWorldRecord, "Shows bonus record for a map");
 	RegConsoleCmd("sm_wrb", SM_BWorldRecord, "Shows bonus record for a map");
+	
 	RegConsoleCmd("sm_time", SM_Time, "Usage: sm_time or nothing. Shows your time on a given map. With no map given, it will tell you your time on the current map.");
+	RegConsoleCmd("sm_pr", SM_Time, "Usage: sm_pr or nothing. Shows your time on a given map. With no map given, it will tell you your time on the current map.");
 	RegConsoleCmd("sm_timew", SM_TimeW, "Like sm_time but for W-Only times.");
+	RegConsoleCmd("sm_prw", SM_TimeW, "Like sm_pr but for W-Only times.");
 	RegConsoleCmd("sm_timesw", SM_TimeSW, "Like sm_time but for Sideways times.");
+	RegConsoleCmd("sm_prsw", SM_TimeSW, "Like sm_prsw but for Sideways times.");
 	RegConsoleCmd("sm_btime", SM_BTime, "Like sm_time but for Bonus times.");
+	RegConsoleCmd("sm_bpr", SM_BTime, "Like sm_pr but for Bonus times.");
+	
 	RegConsoleCmd("sm_style", SM_Style, "Switch to normal, w, or sideways timer.");
 	RegConsoleCmd("sm_mode", SM_Style, "Switches you to normal, w, or sideways timer.");
 	RegConsoleCmd("sm_normal", SM_Normal, "Switches you to normal timer.");
@@ -133,13 +151,17 @@ public OnPluginStart()
 	RegConsoleCmd("sm_w", SM_WOnly, "Switches you to W-Only timer.");
 	RegConsoleCmd("sm_sideways", SM_Sideways, "Switches you to sideways timer.");
 	RegConsoleCmd("sm_sw", SM_Sideways, "Switches you to sideways timer.");
+	
 	RegConsoleCmd("sm_practice", SM_Practice, "Puts you in noclip. Stops your timer.");
 	RegConsoleCmd("sm_p", SM_Practice, "Puts you in noclip. Stops your timer.");
+	
 	RegConsoleCmd("sm_fullhud", SM_Fullhud, "Shows all info in the hint text when being timed.");
 	RegConsoleCmd("sm_maxinfo", SM_Fullhud, "Shows all info in the hint text when being timed.");
 	RegConsoleCmd("sm_display", SM_Fullhud, "Shows all info in the hint text when being timed.");
+	
 	RegConsoleCmd("sm_truevel", SM_TrueVelocity, "Toggles between 2D and 3D velocity velocity meters");
 	RegConsoleCmd("sm_velocity", SM_TrueVelocity, "Toggles between 2D and 3D velocity velocity meters");
+	
 	RegConsoleCmd("sm_pause", SM_Pause, "Pauses your timer and freezes you.");
 	RegConsoleCmd("sm_unpause", SM_Unpause, "Unpauses your timer and unfreezes you.");
 	RegConsoleCmd("sm_resume", SM_Unpause, "Unpauses your timer and unfreezes you.");
@@ -159,9 +181,10 @@ public APLRes:AskPluginLoad2(Handle:myself, bool:late, String:error[], err_max)
 	CreateNative("StopTimer", Native_StopTimer);
 	CreateNative("IsBeingTimed", Native_IsBeingTimed);
 	CreateNative("FinishTimer", Native_FinishTimer);
-	CreateNative("DB_LoadPlayerInfo", Native_LoadPlayerInfo);
 	CreateNative("GetClientStyle", Native_GetClientStyle);
 	CreateNative("IsTimerPaused", Native_IsTimerPaused);
+	
+	//g_fwdOnTimerFinished = CreateGlobalForward("OnTimerFinished", ET_Event, Param_Cell, Param_Float, Param_Cell, Param_Cell, Param_Cell, Param_Cell);
 	return APLRes_Success;
 }
 
@@ -170,11 +193,16 @@ public OnMapStart()
 	// Set the map id
 	GetCurrentMap(g_mapname, sizeof(g_mapname));
 	
-	DB_LoadWorldRecordInfo();
-	
-	DB_LoadTimes();
+	if(g_MapList != INVALID_HANDLE)
+		CloseHandle(g_MapList);
+	g_MapList = ReadMapList();
 	
 	// Start hud hint timer display
+	if(g_hTimerDisplay != INVALID_HANDLE)
+	{
+		KillTimer(g_hTimerDisplay);
+		CloseHandle(g_hTimerDisplay);
+	}
 	g_hTimerDisplay = CreateTimer(GetConVarFloat(g_hHintSpeed), LoopTimerDisplay, _, TIMER_FLAG_NO_MAPCHANGE | TIMER_REPEAT);
 	
 	// record sounds are held in a config file
@@ -198,6 +226,7 @@ public OnConfigsExecuted()
 	if(GetConVarInt(g_hChangeClanTag) == 0)
 	{
 		KillTimer(g_hTimerChangeClanTag);
+		CloseHandle(g_hTimerChangeClanTag);
 	}
 	else
 	{
@@ -209,6 +238,22 @@ public OnClientDisconnect(client)
 {
 	// Remove client's time in memory for other clients that take that client index later
 	ResetClientInfo(client);
+}
+
+public bool:OnClientConnect(client)
+{
+	for(new i=0; i<3; i++)
+	{
+		Format(g_sTime[i][client], 48, "Best: Loading..");
+	}
+	Format(g_sBTime[client], 48, "Best: Loading..");
+	
+	return true;
+}
+
+public OnPlayerIDLoaded(client)
+{
+	DB_LoadPlayerInfo(client);
 }
 
 public OnTimerChatChanged(MessageType, String:Message[])
@@ -230,6 +275,11 @@ public OnTimerChatChanged(MessageType, String:Message[])
 	}
 }
 
+public OnMapIDPostCheck()
+{
+	DB_LoadTimes();
+}
+
 public OnTimerHintSpeedChanged(Handle:convar, const String:oldValue[], const String:newValue[])
 {
 	KillTimer(g_hTimerDisplay);
@@ -241,6 +291,7 @@ public OnChangeClanTagChanged(Handle:convar, const String:oldValue[], const Stri
 	if(GetConVarInt(convar) == 0)
 	{
 		KillTimer(g_hTimerChangeClanTag);
+		CloseHandle(g_hTimerChangeClanTag);
 	}
 	else
 	{
@@ -409,6 +460,7 @@ public SPJ_Callback(Handle:owner, Handle:hndl, String:error[], any:pack)
 	{
 		LogError(error);
 	}
+	CloseHandle(pack);
 }
 
 public Menu_ShowSPJ(Handle:menu, MenuAction:action, param1, param2)
@@ -576,7 +628,7 @@ public Action:SM_WorldRecord(client, args)
 		{
 			decl String:arg[64];
 			GetCmdArgString(arg, sizeof(arg));
-			if(IsMapValid(arg))
+			if(FindStringInArray(g_MapList, arg) != -1)
 			{
 				DB_DisplayRecords(client, arg, TIMER_MAIN, STYLE_NORMAL);
 			}
@@ -609,7 +661,7 @@ public Action:SM_WorldRecordW(client, args)
 		{
 			decl String:arg[64];
 			GetCmdArgString(arg, sizeof(arg));
-			if(IsMapValid(arg))
+			if(FindStringInArray(g_MapList, arg) != -1)
 			{
 				DB_DisplayRecords(client, arg, TIMER_MAIN, STYLE_WONLY);
 			}
@@ -642,7 +694,7 @@ public Action:SM_WorldRecordSW(client, args)
 		{
 			decl String:arg[64];
 			GetCmdArgString(arg, sizeof(arg));
-			if(IsMapValid(arg))
+			if(FindStringInArray(g_MapList, arg) != -1)
 			{
 				DB_DisplayRecords(client, arg, TIMER_MAIN, STYLE_SIDEWAYS);
 			}
@@ -675,7 +727,7 @@ public Action:SM_BWorldRecord(client, args)
 		{
 			decl String:arg[64];
 			GetCmdArgString(arg, sizeof(arg));
-			if(IsMapValid(arg))
+			if(FindStringInArray(g_MapList, arg) != -1)
 			{
 				DB_DisplayRecords(client, arg, TIMER_BONUS, STYLE_NORMAL);
 			}
@@ -716,7 +768,7 @@ public Action:SM_Time(client, args)
 			else
 			{
 				new target = FindTarget(client, arg, true, false);
-				new bool:mapValid = IsMapValid(arg);
+				new bool:mapValid = (FindStringInArray(g_MapList, arg) != -1);
 				if(mapValid == true)
 				{
 					DB_ShowTime(client, client, arg, TIMER_MAIN, STYLE_NORMAL);
@@ -763,7 +815,7 @@ public Action:SM_TimeW(client, args)
 			else
 			{
 				new target = FindTarget(client, arg, true, false);
-				new bool:mapValid = IsMapValid(arg);
+				new bool:mapValid = (FindStringInArray(g_MapList, arg) != -1);
 				
 				if(mapValid)
 				{
@@ -813,7 +865,7 @@ public Action:SM_TimeSW(client, args)
 			else
 			{
 				new target = FindTarget(client, arg, true, false);
-				new bool:mapValid = IsMapValid(arg);
+				new bool:mapValid = (FindStringInArray(g_MapList, arg) != -1);
 				
 				if(mapValid)
 				{
@@ -863,7 +915,7 @@ public Action:SM_BTime(client, args)
 			else
 			{
 				new target = FindTarget(client, arg, true, false);
-				new bool:mapValid = IsMapValid(arg);
+				new bool:mapValid = (FindStringInArray(g_MapList, arg) != -1);
 				
 				if(mapValid)
 				{
@@ -1093,7 +1145,7 @@ public Action:SetClanTag(Handle:timer, any:data)
 						decl String:formattime[32], String:taginfo[32];
 						
 						new Float:time = GetClientTimer(client, TIMER_MAIN);
-						FormatPlayerTime(time, formattime, sizeof(formattime), false, 2);
+						FormatPlayerTime(time, formattime, sizeof(formattime), false, 0);
 						SplitString(formattime, ".", formattime, sizeof(formattime));
 						Format(taginfo, sizeof(taginfo), "%s :: %s ::", stylename[g_timer_style[client]], formattime);
 						
@@ -1104,7 +1156,7 @@ public Action:SetClanTag(Handle:timer, any:data)
 						decl String:bformattime[32];
 						
 						new Float:btime = GetClientTimer(client, TIMER_BONUS);
-						FormatPlayerTime(btime, bformattime, sizeof(bformattime), false, 2);
+						FormatPlayerTime(btime, bformattime, sizeof(bformattime), false, 0);
 						SplitString(bformattime, ".", bformattime, sizeof(bformattime));
 						Format(bformattime, sizeof(bformattime), "B :: %s ::", bformattime);
 						
@@ -1240,7 +1292,8 @@ GetTimerAdvancedString(client, String:result[256])
 			}
 			else if(g_timer_style[client] == STYLE_WONLY)
 			{
-				Format(result, sizeof(result), "W-Only\nTime: %s (%d)\nJumps: %d\nSpeed: %d",
+				Format(result, sizeof(result), "W-Only%s\nTime: %s (%d)\nJumps: %d\nSpeed: %d",
+					(IsInAFreeStyleZone(client))?" (FS)":"",
 					num, 
 					GetPlayerPosition(RealTime, TIMER_MAIN, STYLE_WONLY),
 					g_dJumps[client],
@@ -1248,7 +1301,8 @@ GetTimerAdvancedString(client, String:result[256])
 			}
 			else if(g_timer_style[client] == STYLE_SIDEWAYS)
 			{
-				Format(result, sizeof(result), "Sideways\nTime: %s (%d)\nJumps: %d\nStrafes: %d\nSpeed: %d",
+				Format(result, sizeof(result), "Sideways%s\nTime: %s (%d)\nJumps: %d\nStrafes: %d\nSpeed: %d",
+					(IsInAFreeStyleZone(client))?" (FS)":"",
 					num, 
 					GetPlayerPosition(RealTime, TIMER_MAIN, STYLE_SIDEWAYS),
 					g_dJumps[client],
@@ -1331,12 +1385,53 @@ GetPlayerPosition(const Float:time, Type, Style)
 	}
 }
 
+GetPlayerPositionByID(PlayerID, Type, Style)
+{
+	new Handle:hTimes;
+	
+	if(Type == TIMER_MAIN)
+	{
+		hTimes = CloneHandle(g_hTimes[Style]);
+	}
+	else
+	{
+		hTimes = CloneHandle(g_hBTimes);
+	}
+	
+	new iSize = GetArraySize(hTimes);
+	
+	for(new i=0; i<iSize; i++)
+	{
+		if(PlayerID == GetArrayCell(hTimes, i, 0))
+			return i+1;
+	}
+	
+	CloseHandle(hTimes);
+	return iSize;
+}
+
 // Controls what shows up on the right side of players screen, KeyHintText
 public Action:Timer_SpecList(Handle:timer, any:data)
 {
 	// Different arrays for admins and non-admins
-	new 	SpecCount[MAXPLAYERS+1], AdminSpecCount[MAXPLAYERS+1];
-	
+	new 	SpecCount[MaxClients+1], AdminSpecCount[MaxClients+1];
+	SpecCountToArrays(SpecCount, AdminSpecCount);
+
+	new String:message[256];
+	for(new client=1; client<=MaxClients; client++)
+	{
+		if(IsClientInGame(client))
+		{
+			if(GetKeyHintMessage(client, message, sizeof(message), SpecCount, AdminSpecCount))
+			{
+				PrintKeyHintText(client, message);
+			}
+		}
+	}
+}
+
+SpecCountToArrays(clients[], admins[])
+{
 	for(new client=1; client <= MaxClients; client++)
 	{
 		if(IsClientInGame(client))
@@ -1348,116 +1443,103 @@ public Action:Timer_SpecList(Handle:timer, any:data)
 				if((0 < Target <= MaxClients) && (ObserverMode == 4 || ObserverMode == 5))
 				{
 					if(!GetAdminFlag(GetUserAdmin(client), Admin_Generic, Access_Effective))
-						SpecCount[Target]++;
-					AdminSpecCount[Target]++;
+						clients[Target]++;
+					admins[Target]++;
 				}
 			}
 		}
 	}
+}
 
-	new Position;
+bool:GetKeyHintMessage(client, String:message[], maxlength, SpecCount[], AdminSpecCount[])
+{
+	FormatEx(message, maxlength, "");
 	
-	for(new client=1; client <= MaxClients; client++)
+	new target;
+	
+	if(IsPlayerAlive(client))
 	{
-		if(IsClientInGame(client))
+		target = client;
+	}
+	else
+	{
+		target = GetEntPropEnt(client, Prop_Send, "m_hObserverTarget");
+		new mode = GetEntProp(client, Prop_Send, "m_iObserverMode");
+		if(!((0 < target <= MaxClients) && (mode == 4 || mode == 5)))
 		{
-			new bool:bClientIsAdmin = GetAdminFlag(GetUserAdmin(client), Admin_Generic, Access_Effective);
+			return false;
+		}
+	}
+	
+	new timelimit;
+	GetMapTimeLimit(timelimit);
+	if(GetConVarBool(g_hShowTimeLeft) && timelimit != 0)
+	{
+		new timeleft;
+		GetMapTimeLeft(timeleft);
+		
+		if(timeleft <= 0)
+		{
+			Format(message, maxlength, "Time left: Map finished\n \n");
+		}
+		else if(timeleft < 60)
+		{
+			Format(message, maxlength, "Time left: <1 minute\n \n");
+		}
+		else
+		{
+			// Format the time left
+			new minutes 	= RoundToFloor(float(timeleft)/60);
 			
-			if(IsPlayerAlive(client))
+			Format(message, maxlength, "Time left: %d minutes\n \n", minutes);
+		}
+	}
+	
+	if(!IsFakeClient(target))
+	{
+		new position;
+		if(IsBeingTimed(target, TIMER_BONUS))
+		{
+			Format(message, maxlength, "%s%s\n%s", message, g_brecord, g_sBTime[target]);
+			
+			if(g_btimes[target] != 0.0)
 			{
-				// Format the key hint string
-				new String:buffer[250];
-				if(IsBeingTimed(client, TIMER_BONUS))
-				{
-					
-					Format(buffer, sizeof(buffer), "%s", g_sBTime[client]);
-					if(g_btimes[client] != 0)
-					{
-						Position = GetPlayerPosition(g_btimes[client], TIMER_BONUS, STYLE_NORMAL);
-						Format(buffer, sizeof(buffer), "%s (#%d)", buffer, Position);
-					}
-					Format(buffer, sizeof(buffer), "%s\n \n", buffer);
-				}
-				else
-				{
-					Format(buffer, sizeof(buffer), "%s", g_sTime[g_timer_style[client]][client]);
-					if(g_times[g_timer_style[client]][client] != 0)
-					{
-						Position = GetPlayerPosition(g_times[g_timer_style[client]][client], TIMER_MAIN, g_timer_style[client]);
-						Format(buffer, sizeof(buffer), "%s (#%d)", buffer, Position);
-					}
-					Format(buffer, sizeof(buffer), "%s\n \n", buffer);
-				}
-				Format(buffer, sizeof(buffer), "%sSpectators: %d", buffer, (bClientIsAdmin)?AdminSpecCount[client]:SpecCount[client]);
-				
-				if(bClientIsAdmin && IsBeingTimed(client, TIMER_ANY))
-				{
-					Format(buffer, sizeof(buffer), "%s\n \nSync: %.1f", buffer, GetClientSync(client));
-				}
-				
-				// Send message
-				new Handle:hMessage = StartMessageOne("KeyHintText", client);
-				if (hMessage != INVALID_HANDLE) 
-				{ 				
-					BfWriteByte(hMessage, 1); 
-					BfWriteString(hMessage, buffer);
-				}
-				EndMessage();
+				position = GetPlayerPositionByID(GetClientID(target), TIMER_BONUS, STYLE_NORMAL);
+				Format(message, maxlength, "%s (#%d)", message, position);
 			}
-			else
+		}
+		else
+		{
+			Format(message, maxlength, "%s%s\n%s", message, g_record[g_timer_style[target]], g_sTime[g_timer_style[target]][target]);
+			
+			if(g_times[g_timer_style[target]][target] != 0.0)
 			{
-				// Check if player is spectating someone
-				new Target = GetEntPropEnt(client, Prop_Send, "m_hObserverTarget");
-				new ObserverMode = GetEntProp(client, Prop_Send, "m_iObserverMode");
-				if((0 < Target <= MaxClients) && (ObserverMode == 4 || ObserverMode == 5))
-				{					
-					// Format key hint string
-					new String:buffer[250];
-					if(IsBeingTimed(Target, TIMER_BONUS))
-					{
-						if(!IsFakeClient(Target))
-						{
-							Format(buffer, sizeof(buffer), "%s", g_sBTime[Target]);
-							if(g_btimes[Target] != 0)
-							{
-								Position = GetPlayerPosition(g_btimes[Target], TIMER_BONUS, STYLE_NORMAL);
-								Format(buffer, sizeof(buffer), "%s (#%d)", buffer, Position);
-							}
-							Format(buffer, sizeof(buffer), "%s\n \n", buffer);
-						}
-					}
-					else
-					{
-						if(!IsFakeClient(Target))
-						{
-							FormatEx(buffer, sizeof(buffer), "%s", g_sTime[g_timer_style[Target]][Target]);
-							if(g_times[g_timer_style[Target]][Target] != 0)
-							{
-								Position = GetPlayerPosition(g_times[g_timer_style[Target]][Target], TIMER_MAIN, g_timer_style[Target]);
-								Format(buffer, sizeof(buffer), "%s (#%d)", buffer, Position);
-							}
-							Format(buffer, sizeof(buffer), "%s\n \n", buffer);
-						}
-					}
-					Format(buffer, sizeof(buffer), "%sSpectators: %d", buffer, (bClientIsAdmin)?AdminSpecCount[Target]:SpecCount[Target]);
-					
-					if(bClientIsAdmin && IsBeingTimed(Target, TIMER_ANY))
-					{
-						Format(buffer, sizeof(buffer), "%s\n \nSync: %.1f", buffer, GetClientSync(Target));
-					}
-					
-					// Send key hent message
-					new Handle:hMessage = StartMessageOne("KeyHintText", client);
-					if (hMessage != INVALID_HANDLE) 
-					{ 
-						BfWriteByte(hMessage, 1); 
-						BfWriteString(hMessage, buffer);
-					}
-					EndMessage();
-				}
+				position = GetPlayerPositionByID(GetClientID(target), TIMER_MAIN, g_timer_style[target]);
+				Format(message, maxlength, "%s (#%d)", message, position);
 			}
 		}
 	}
+	
+	new bool:bClientIsAdmin = GetAdminFlag(GetUserAdmin(client), Admin_Generic, Access_Effective);
+	if(IsBeingTimed(target, TIMER_ANY) && !IsFakeClient(target) && bClientIsAdmin && (g_timer_style[target] == STYLE_NORMAL || g_timer_type[target] == TIMER_BONUS))
+		Format(message, maxlength, "%s\nSync: %.1f", message, GetClientSync(target));
+	else
+		Format(message, maxlength, "%s\n", message);
+	
+	Format(message, maxlength, "%s\n \nSpectators: %d\n", message, (bClientIsAdmin)?AdminSpecCount[target]:SpecCount[target]);
+	
+	return true;
+}
+
+PrintKeyHintText(client, const String:message[])
+{
+	new Handle:hMessage = StartMessageOne("KeyHintText", client);
+	if (hMessage != INVALID_HANDLE) 
+	{ 
+		BfWriteByte(hMessage, 1); 
+		BfWriteString(hMessage, message);
+	}
+	EndMessage();
 }
 
 Float:GetClientSync(client)
@@ -1522,25 +1604,50 @@ bool:TimerCanStart(client)
 {
 	// Fixes a bug for players to completely cheat times by spawning in weird parts of the map
 	if(GetEngineTime() < (g_fSpawnTime[client] + 0.1))
+	{
 		return false;
+	}
 	
 	// Don't start if their speed isn't default
 	if(GetEntPropFloat(client, Prop_Data, "m_flLaggedMovementValue") != 1.0)
+	{
+		WarnClient(client, "Your movement speed is off. Type !normalspeed to set it to default.");
 		return false;
+	}
 	
 	// Don't start if they are in noclip
 	if(GetEntityMoveType(client) == MOVETYPE_NOCLIP)
+	{
 		return false;
+	}
 	
 	// Don't start if their gravity isn't normal
 	if(GetEntityGravity(client) != 0.0)
+	{
+		SetEntityGravity(client, 0.0);
 		return false;
+	}
 	
 	// Don't start if they are a fake client
 	if(IsFakeClient(client))
+	{
 		return false;
+	}
 	
 	return true;
+}
+
+WarnClient(client, const String:message[])
+{
+	if(GetEngineTime() > (g_fWarningTime[client] + 10.0))
+	{
+		PrintColorText(client, "%s%s%s",
+			g_msg_start,
+			g_msg_textcol,
+			message);
+			
+		g_fWarningTime[client] = GetEngineTime();	
+	}
 }
 
 public Native_StopTimer(Handle:plugin, numParams)
@@ -1564,6 +1671,11 @@ public Native_StopTimer(Handle:plugin, numParams)
 	}
 	
 	g_bPaused[client] = false;
+	
+	if(GetEntityMoveType(client) == MOVETYPE_NONE)
+	{
+		SetEntityMoveType(client, MOVETYPE_WALK);
+	}
 }
 
 public Native_IsBeingTimed(Handle:plugin, numParams)
@@ -1586,30 +1698,19 @@ public Native_IsBeingTimed(Handle:plugin, numParams)
 	return false;
 }
 
-public Native_FinishTimer(Handle:plugin, numParams)
+bool:ShouldTimerFinish(client, Type, Style)
 {
-	new client = GetNativeCell(1);
-	new Type   = g_timer_type[client];
-	new Style  = g_timer_style[client];
-	
-	// players not identified in the database can't have stored times
 	if(GetClientID(client) == 0)
-	{
-		StopTimer(client);
-		return;
-	}
+		return false;
 	
-	// Just in case someone triggers finish timer with a paused timer
 	if(g_bPaused[client] == true)
-	{
-		return;
-	}
+		return false;
 	
 	// Anti-cheat sideways
 	if(Type == TIMER_MAIN && Style == STYLE_SIDEWAYS)
 	{
 		new Float:WSRatio = float(g_dSWStrafes[client][0])/float(g_dSWStrafes[client][1]);
-		if( (WSRatio > 2.0) || (g_dStrafes[client] < 10) )
+		if((WSRatio > 2.0) || (g_dStrafes[client] < 10))
 		{
 			PrintColorText(client, "%s%sThat time did not count because your W:S ratio (%s%4.1f%s) was too large or your strafe count (%s%d%s) was too small.",
 				g_msg_start,
@@ -1621,74 +1722,176 @@ public Native_FinishTimer(Handle:plugin, numParams)
 				g_dStrafes[client],
 				g_msg_textcol);
 			StopTimer(client);
-			return;
+			return false;
 		}
 	}
 	
-	// get their time
-	new Float:newTime;
-	if(IsBeingTimed(client, TIMER_MAIN))
-	{
-		newTime = GetClientTimer(client, TIMER_MAIN);
-	}
-	else if(IsBeingTimed(client, TIMER_BONUS))
-	{
-		newTime = GetClientTimer(client, TIMER_BONUS);
-	}
+	return true;
+}
+
+public Native_FinishTimer(Handle:plugin, numParams)
+{
+	new client = GetNativeCell(1);
+	new Type   = g_timer_type[client];
+	new Style  = g_timer_style[client];
 	
-	//new Pos = GetPlayerPosition(client, newTime);
-	
-	StopTimer(client);
-	
-	// If time is an improvement
-	if(((newTime < g_times[Style][client] || g_times[Style][client] == 0.0) && Type == TIMER_MAIN) || ((newTime < g_btimes[client] || g_btimes[client] == 0.0) && Type == TIMER_BONUS))
+	if(ShouldTimerFinish(client, Type, Style))
 	{
-		// save the time
-		if(Type == TIMER_MAIN)
+		// get their time
+		new Float:newTime;
+		if(IsBeingTimed(client, TIMER_MAIN))
 		{
-			DB_UpdateTime(client, Type, Style, newTime, g_dJumps[client], g_dStrafes[client], GetClientSync(client));
+			newTime = GetClientTimer(client, TIMER_MAIN);
 		}
-		else
+		else if(IsBeingTimed(client, TIMER_BONUS))
 		{
-			DB_UpdateTime(client, Type, 0, newTime, g_dJumps[client], g_dStrafes[client], GetClientSync(client));
+			newTime = GetClientTimer(client, TIMER_BONUS);
 		}
 		
-		new const String:StyleString[3][] = {"", "[SIDEWAYS] ", "[W-ONLY] "};
-		decl String:newTimeString[32], String:name[MAX_NAME_LENGTH];
-		GetClientName(client, name, sizeof(name));
-		FormatPlayerTime(newTime, newTimeString, sizeof(newTimeString), false, 2);
+		//new Pos = GetPlayerPosition(client, newTime);
 		
-		if(Type == TIMER_MAIN)
+		StopTimer(client);
+		
+		// If time is an improvement
+		if(((newTime < g_times[Style][client] || g_times[Style][client] == 0.0) && Type == TIMER_MAIN) || ((newTime < g_btimes[client] || g_btimes[client] == 0.0) && Type == TIMER_BONUS))
 		{
-			// Set players new time string for key hint
-			Format(g_sTime[Style][client], 48, "Best: %s", newTimeString);
+			// save the time
+			if(Type == TIMER_MAIN)
+				DB_UpdateTime(client, Type, Style, newTime, g_dJumps[client], g_dStrafes[client], GetClientSync(client));
+			else
+				DB_UpdateTime(client, Type, 0, newTime, g_dJumps[client], g_dStrafes[client], GetClientSync(client));
 			
-			// Set client's personal best variable
-			g_times[Style][client] = newTime;
+			new const String:StyleString[3][] = {"", "[SIDEWAYS] ", "[W-ONLY] "};
+			decl String:newTimeString[32], String:name[MAX_NAME_LENGTH];
+			GetClientName(client, name, sizeof(name));
+			FormatPlayerTime(newTime, newTimeString, sizeof(newTimeString), false, 1);
 			
-			// If it's a WR
-			if(newTime < g_WorldRecord[Style] || g_WorldRecord[Style] == 0.0)
+			if(Type == TIMER_MAIN)
 			{
-				// Set the worldrecord variable to the new time
-				g_WorldRecord[Style] = newTime;
+				// Set players new time string for key hint
+				Format(g_sTime[Style][client], 48, "Best: %s", newTimeString);
 				
-				// Save new ghost if it's on normal style
-				if(Style == STYLE_NORMAL)
-					SaveGhost(client, newTime);
+				// Set client's personal best variable
+				g_times[Style][client] = newTime;
 				
-				PlayRecordSound();
-				
-				// Set new key hint text message
-				Format(g_record[Style], 48, "%s (%s)", newTimeString, name);
-				
-				// Print WR message to all players
-				if(Style != STYLE_WONLY)
+				// If it's a WR
+				if(newTime < g_WorldRecord[Style] || g_WorldRecord[Style] == 0.0)
 				{
-					PrintColorTextAll("%s%sNEW %s%s%sRecord by %s%s %sin %s%s%s (%s%d%s jumps, %s%d%s strafes)",
+					// Set the worldrecord variable to the new time
+					g_WorldRecord[Style] = newTime;
+					
+					// Save new ghost if it's on normal style
+					if(Style == STYLE_NORMAL)
+						SaveGhost(client, newTime);
+					
+					PlayRecordSound();
+					
+					// Set new key hint text message
+					Format(g_record[Style], 48, "%s (%s)", newTimeString, name);
+					
+					// Print WR message to all players
+					if(Style != STYLE_WONLY)
+					{
+						PrintColorTextAll("%s%sNEW %s%s%sRecord by %s%s %sin %s%s%s (%s%d%s jumps, %s%d%s strafes)",
+							g_msg_start,
+							g_msg_textcol,
+							g_msg_varcol,
+							StyleString[Style],
+							g_msg_textcol,
+							g_msg_varcol,
+							name,
+							g_msg_textcol,
+							g_msg_varcol,
+							newTimeString,
+							g_msg_textcol,
+							g_msg_varcol,
+							g_dJumps[client],
+							g_msg_textcol,
+							g_msg_varcol,
+							g_dStrafes[client],
+							g_msg_textcol);
+					}
+					else
+					{
+						PrintColorTextAll("%s%sNEW %s%s%sRecord by %s%s %sin %s%s%s (%s%d%s jumps)",
+							g_msg_start,
+							g_msg_textcol,
+							g_msg_varcol,
+							StyleString[Style],
+							g_msg_textcol,
+							g_msg_varcol,
+							name,
+							g_msg_textcol,
+							g_msg_varcol,
+							newTimeString,
+							g_msg_textcol,
+							g_msg_varcol,
+							g_dJumps[client],
+							g_msg_textcol);
+					}
+				}
+				else //If it's just an improvement
+				{
+					FormatPlayerTime(newTime, newTimeString, sizeof(newTimeString), false, 1);
+					if(Style != STYLE_WONLY)
+					{
+						PrintColorTextAll("%s%s%s%s %sfinished in %s%s%s (%s%d%s jumps, %s%d%s strafes)", 
+							g_msg_start,
+							g_msg_varcol,
+							StyleString[Style], 
+							name, 
+							g_msg_textcol,
+							g_msg_varcol,
+							newTimeString,
+							g_msg_textcol,
+							g_msg_varcol,
+							g_dJumps[client],
+							g_msg_textcol,
+							g_msg_varcol,
+							g_dStrafes[client],
+							g_msg_textcol);
+					}
+					else
+					{
+						PrintColorTextAll("%s%s%s%s %sfinished in %s%s%s (%s%d%s jumps)", 
+							g_msg_start,
+							g_msg_varcol,
+							StyleString[Style], 
+							name, 
+							g_msg_textcol,
+							g_msg_varcol,
+							newTimeString,
+							g_msg_textcol,
+							g_msg_varcol,
+							g_dJumps[client],
+							g_msg_textcol);
+					}
+				}
+			}
+			else if(Type == TIMER_BONUS)
+			{
+				// Set players new time string for key hint
+				Format(g_sBTime[client], 48, "Best: %s", newTimeString);
+				
+				// Set client's personal best
+				g_btimes[client] = newTime;
+				
+				// If it's a top time
+				if(newTime < g_bWorldRecord || g_bWorldRecord == 0.0)
+				{
+					// Set the worldrecord variable to the new time
+					g_bWorldRecord = newTime;
+					
+					PlayRecordSound();
+					
+					//Set new key hint text message
+					Format(g_brecord, sizeof(g_brecord), "%s (%s)", newTimeString, name);
+					
+					// Print BWR message to all players
+					PrintColorTextAll("%s%sNEW %s[BONUS] %sRecord by %s%s %sin %s%s%s (%s%d%s jumps, %s%d%s strafes)",
 						g_msg_start,
 						g_msg_textcol,
 						g_msg_varcol,
-						StyleString[Style],
 						g_msg_textcol,
 						g_msg_varcol,
 						name,
@@ -1703,34 +1906,12 @@ public Native_FinishTimer(Handle:plugin, numParams)
 						g_dStrafes[client],
 						g_msg_textcol);
 				}
-				else
+				else // If it's just an improvement
 				{
-					PrintColorTextAll("%s%sNEW %s%s%sRecord by %s%s %sin %s%s%s (%s%d%s jumps)",
-						g_msg_start,
-						g_msg_textcol,
-						g_msg_varcol,
-						StyleString[Style],
-						g_msg_textcol,
-						g_msg_varcol,
-						name,
-						g_msg_textcol,
-						g_msg_varcol,
-						newTimeString,
-						g_msg_textcol,
-						g_msg_varcol,
-						g_dJumps[client],
-						g_msg_textcol);
-				}
-			}
-			else //If it's just an improvement
-			{
-				FormatPlayerTime(newTime, newTimeString, sizeof(newTimeString), false, 2);
-				if(Style != STYLE_WONLY)
-				{
-					PrintColorTextAll("%s%s%s%s %sfinished in %s%s%s (%s%d%s jumps, %s%d%s strafes)", 
+					FormatPlayerTime(newTime, newTimeString, sizeof(newTimeString), false, 1);
+					PrintColorTextAll("%s%s[BONUS] %s %sfinished in %s%s%s (%s%d%s jumps, %s%d%s strafes)", 
 						g_msg_start,
 						g_msg_varcol,
-						StyleString[Style], 
 						name, 
 						g_msg_textcol,
 						g_msg_varcol,
@@ -1743,115 +1924,43 @@ public Native_FinishTimer(Handle:plugin, numParams)
 						g_dStrafes[client],
 						g_msg_textcol);
 				}
-				else
-				{
-					PrintColorTextAll("%s%s%s%s %sfinished in %s%s%s (%s%d%s jumps)", 
-						g_msg_start,
-						g_msg_varcol,
-						StyleString[Style], 
-						name, 
-						g_msg_textcol,
-						g_msg_varcol,
-						newTimeString,
-						g_msg_textcol,
-						g_msg_varcol,
-						g_dJumps[client],
-						g_msg_textcol);
-				}
 			}
-		}
-		else if(Type == TIMER_BONUS)
-		{
-			// Set players new time string for key hint
-			Format(g_sBTime[client], 48, "Best: %s", newTimeString);
-			
-			// Set client's personal best
-			g_btimes[client] = newTime;
-			
-			// If it's a top time
-			if(newTime < g_bWorldRecord || g_bWorldRecord == 0.0)
-			{
-				// Set the worldrecord variable to the new time
-				g_bWorldRecord = newTime;
-				
-				PlayRecordSound();
-				
-				//Set new key hint text message
-				Format(g_brecord, sizeof(g_brecord), "%s (%s)", newTimeString, name);
-				
-				// Print BWR message to all players
-				PrintColorTextAll("%s%sNEW %s[BONUS] %sRecord by %s%s %sin %s%s%s (%s%d%s jumps, %s%d%s strafes)",
-					g_msg_start,
-					g_msg_textcol,
-					g_msg_varcol,
-					g_msg_textcol,
-					g_msg_varcol,
-					name,
-					g_msg_textcol,
-					g_msg_varcol,
-					newTimeString,
-					g_msg_textcol,
-					g_msg_varcol,
-					g_dJumps[client],
-					g_msg_textcol,
-					g_msg_varcol,
-					g_dStrafes[client],
-					g_msg_textcol);
-			}
-			else // If it's just an improvement
-			{
-				FormatPlayerTime(newTime, newTimeString, sizeof(newTimeString), false, 2);
-				PrintColorTextAll("%s%s[BONUS] %s %sfinished in %s%s%s (%s%d%s jumps, %s%d%s strafes)", 
-					g_msg_start,
-					g_msg_varcol,
-					name, 
-					g_msg_textcol,
-					g_msg_varcol,
-					newTimeString,
-					g_msg_textcol,
-					g_msg_varcol,
-					g_dJumps[client],
-					g_msg_textcol,
-					g_msg_varcol,
-					g_dStrafes[client],
-					g_msg_textcol);
-			}
-		}
-	}
-	else
-	{
-		new const String:styleString[3][] = {"", "[SIDEWAYS] ", "[W-ONLY] "};
-		decl String:time[32], String:personalBest[32];
-		FormatPlayerTime(newTime, time, sizeof(time), false, 2);
-		
-		if(Type == TIMER_MAIN)
-		{
-			FormatPlayerTime(g_times[g_timer_style[client]][client], personalBest, sizeof(personalBest), true, 2);
-			
-			PrintColorText(client, "%s%s%s%sYou finished in %s%s%s, but did not improve on your previous time of %s%s",
-				g_msg_start,
-				g_msg_varcol,
-				styleString[Style],
-				g_msg_textcol,
-				g_msg_varcol,
-				time,
-				g_msg_textcol,
-				g_msg_varcol,
-				personalBest);
 		}
 		else
 		{
-			FormatPlayerTime(g_btimes[client], personalBest, sizeof(personalBest), true, 2);
+			new const String:styleString[3][] = {"", "[SIDEWAYS] ", "[W-ONLY] "};
+			decl String:time[32], String:personalBest[32];
+			FormatPlayerTime(newTime, time, sizeof(time), false, 2);
 			
-			PrintColorText(client, "%s%s[BONUS] %sYou finished in %s%s%s, but did not improve on your previous time of %s%s",
-				g_msg_start,
-				g_msg_varcol,
-				g_msg_textcol,
-				g_msg_varcol,
-				time,
-				g_msg_textcol,
-				g_msg_varcol,
-				personalBest);
+			if(Type == TIMER_MAIN)
+			{
+				FormatPlayerTime(g_times[g_timer_style[client]][client], personalBest, sizeof(personalBest), true, 1);
+				
+				PrintColorText(client, "%s%s%s%sYou finished in %s%s%s, but did not improve on your previous time of %s%s",
+					g_msg_start,
+					g_msg_varcol,
+					styleString[Style],
+					g_msg_textcol,
+					g_msg_varcol,
+					time,
+					g_msg_textcol,
+					g_msg_varcol,
+					personalBest);
+			}
+			else
+			{
+				FormatPlayerTime(g_btimes[client], personalBest, sizeof(personalBest), true, 1);
+				
+				PrintColorText(client, "%s%s[BONUS] %sYou finished in %s%s%s, but did not improve on your previous time of %s%s",
+					g_msg_start,
+					g_msg_varcol,
+					g_msg_textcol,
+					g_msg_varcol,
+					time,
+					g_msg_textcol,
+					g_msg_varcol,
+					personalBest);
+			}
 		}
 	}
 }
@@ -1860,11 +1969,11 @@ Float:GetClientTimer(client, TimerType)
 {
 	if(TimerType == TIMER_MAIN)
 	{
-		return GetEngineTime()-g_startTime[client];
+		return GetEngineTime() - g_startTime[client];
 	}
 	else if(TimerType == TIMER_BONUS)
 	{
-		return GetEngineTime()-g_bstartTime[client];
+		return GetEngineTime() - g_bstartTime[client];
 	}
 	else
 	{
@@ -1874,8 +1983,13 @@ Float:GetClientTimer(client, TimerType)
 
 LoadRecordSounds()
 {
+	
+	
 	// Re-intizialize array to remove any current sounds loaded
-	g_hSoundsArray = CreateArray(ByteCountToCells(PLATFORM_MAX_PATH), 1);
+	if(g_hSoundsArray != INVALID_HANDLE)
+		ClearArray(g_hSoundsArray);
+	else
+		g_hSoundsArray = CreateArray(ByteCountToCells(PLATFORM_MAX_PATH));
 	
 	// Create path and file variables
 	decl String:sPath[PLATFORM_MAX_PATH], Handle:hFile;
@@ -1885,9 +1999,7 @@ LoadRecordSounds()
 	
 	// If it doesn't exist, create it
 	if(!DirExists(sPath))
-	{
 		CreateDirectory(sPath, 511);
-	}
 	
 	// Build a path to check if the config file exists
 	BuildPath(Path_SM, sPath, sizeof(sPath), "configs/timer/wrsounds.cfg");
@@ -1900,7 +2012,7 @@ LoadRecordSounds()
 		if(hFile != INVALID_HANDLE)
 		{
 			decl String:sSound[PLATFORM_MAX_PATH], String:sPSound[PLATFORM_MAX_PATH];
-			while(IsEndOfFile(hFile) == false)
+			while(!IsEndOfFile(hFile))
 			{
 				// get the next line in the file
 				ReadFileLine(hFile, sSound, sizeof(sSound));
@@ -1917,8 +2029,7 @@ LoadRecordSounds()
 					AddFileToDownloadsTable(sPSound);
 					
 					// add it to array for later downloading
-					SetArrayString(g_hSoundsArray, GetArraySize(g_hSoundsArray)-1, sSound);
-					ResizeArray(g_hSoundsArray, GetArraySize(g_hSoundsArray)+1);
+					PushArrayString(g_hSoundsArray, sSound);
 				}
 			}
 		}
@@ -1930,9 +2041,7 @@ LoadRecordSounds()
 		
 		// Close it if it was opened succesfully
 		if(hFile != INVALID_HANDLE)
-		{
 			CloseHandle(hFile);
-		}	
 	}
 	
 }
@@ -1979,9 +2088,8 @@ DB_Connect()
 }
 
 // loads player times on the map
-public Native_LoadPlayerInfo(Handle:plugin, numParams)
+DB_LoadPlayerInfo(client)
 {
-	new client = GetNativeCell(1);
 	if(!IsFakeClient(client))
 	{
 		decl String:query[512];
@@ -1996,7 +2104,6 @@ public DB_LoadPlayerInfo_Callback(Handle:owner, Handle:hndl, const String:error[
 {
 	if(hndl != INVALID_HANDLE)
 	{
-		
 		new rows = SQL_GetRowCount(hndl), Type, Style, Float:Time;
 		
 		for(new i=0; i<rows; i++)
@@ -2023,7 +2130,7 @@ public DB_LoadPlayerInfo_Callback(Handle:owner, Handle:hndl, const String:error[
 		{
 			if(g_times[i][client])
 			{
-				FormatPlayerTime(g_times[i][client], g_sTime[i][client], 48, false, 2);
+				FormatPlayerTime(g_times[i][client], g_sTime[i][client], 48, false, 1);
 				Format(g_sTime[i][client], 48, "Best: %s", g_sTime[i][client]);
 			}
 			else
@@ -2035,7 +2142,7 @@ public DB_LoadPlayerInfo_Callback(Handle:owner, Handle:hndl, const String:error[
 		if(g_btimes[client])
 		{
 			// Format key hint text
-			FormatPlayerTime(g_btimes[client], g_sBTime[client], 48, false, 2);
+			FormatPlayerTime(g_btimes[client], g_sBTime[client], 48, false, 1);
 			Format(g_sBTime[client], 48, "Best: %s", g_sBTime[client]);
 		}
 		else
@@ -2117,6 +2224,7 @@ public DB_UpdateTime_Callback1(Handle:owner, Handle:hndl, const String:error[], 
 	}
 	else
 	{
+		CloseHandle(data);
 		LogError(error);
 	}
 }
@@ -2127,7 +2235,7 @@ public DB_UpdateTime_Callback2(Handle:owner, Handle:hndl, const String:error[], 
 	{
 		ResetPack(data);
 		ReadPackCell(data);
-		new Type = ReadPackCell(data);
+		new Type  = ReadPackCell(data);
 		new Style = ReadPackCell(data);
 		
 		DB_UpdateRanks(g_mapname, Type, Style);
@@ -2140,6 +2248,8 @@ public DB_UpdateTime_Callback2(Handle:owner, Handle:hndl, const String:error[], 
 	{
 		LogError(error);
 	}
+	
+	CloseHandle(data);
 }
 
 // Opens a menu that displays the records on the given map
@@ -2156,7 +2266,7 @@ DB_DisplayRecords(client, String:mapname[], Type, Style)
 		mapname,
 		Type,
 		Style);
-	SQL_TQuery(g_DB, DB_DisplayRecords_Callback1, query, pack);	
+	SQL_TQuery(g_DB, DB_DisplayRecords_Callback1, query, pack);
 }
 
 public DB_DisplayRecords_Callback1(Handle:owner, Handle:hndl, String:error[], any:data)
@@ -2173,7 +2283,7 @@ public DB_DisplayRecords_Callback1(Handle:owner, Handle:hndl, String:error[], an
 		new rowcount = SQL_GetRowCount(hndl);
 		if(rowcount != 0)
 		{	
-			decl String:name[MAX_NAME_LENGTH], String:title[128], String:item[128], String:info[256], String:sTime[32], Float:time, 
+			decl String:name[(MAX_NAME_LENGTH*2)+1], String:title[128], String:item[256], String:info[256], String:sTime[32], Float:time, 
 			Float:points, jumps, strafes, timestamp, PlayerID, Float:ClientTime, MapRank, Float:Sync;
 			new const String:type_Name[2][] = {" ", " Bonus "};
 			new const String:style_Name[3][] = {" ", " (Sideways)", " (W-Only)"};
@@ -2186,7 +2296,7 @@ public DB_DisplayRecords_Callback1(Handle:owner, Handle:hndl, String:error[], an
 				time 	= SQL_FetchFloat(hndl, 0);
 				SQL_FetchString(hndl, 1, name, sizeof(name));
 				jumps 	= SQL_FetchInt(hndl, 2);
-				FormatPlayerTime(time, sTime, sizeof(sTime), false, 2);
+				FormatPlayerTime(time, sTime, sizeof(sTime), false, 1);
 				strafes 	= SQL_FetchInt(hndl, 3);
 				points 	= SQL_FetchFloat(hndl, 4);
 				timestamp 	= SQL_FetchInt(hndl, 5);
@@ -2239,7 +2349,7 @@ public DB_DisplayRecords_Callback1(Handle:owner, Handle:hndl, String:error[], an
 			decl String:sClientTime[32];
 			if(ClientTime != 0.0)
 			{
-				FormatPlayerTime(ClientTime, sClientTime, sizeof(sClientTime), false, 2);
+				FormatPlayerTime(ClientTime, sClientTime, sizeof(sClientTime), false, 1);
 				Format(title, sizeof(title), "%s%srecords%s\n \nYour time: %s ( %d / %d )\n--------------------------------------",
 					mapname,
 					type_Name[Type],
@@ -2258,7 +2368,6 @@ public DB_DisplayRecords_Callback1(Handle:owner, Handle:hndl, String:error[], an
 			}
 			SetMenuTitle(menu, title);
 			
-			SetMenuExitBackButton(menu, true);
 			SetMenuExitButton(menu, true);
 			DisplayMenu(menu, client, MENU_TIME_FOREVER);
 		}
@@ -2273,6 +2382,7 @@ public DB_DisplayRecords_Callback1(Handle:owner, Handle:hndl, String:error[], an
 	{
 		LogError(error);
 	}
+	CloseHandle(data);
 }
 
 public Menu_WorldRecord(Handle:menu, MenuAction:action, param1, param2)
@@ -2347,7 +2457,7 @@ ShowRecordInfo(client, String:name[256], String:info[11][128])//, const String:n
 	DrawPanelText(menu, sTimeStamp);
 	
 	
-	if(GetAdminFlag(GetUserAdmin(client), Admin_Generic, Access_Effective) && Type == TIMER_MAIN && Style == STYLE_NORMAL)
+	if(GetAdminFlag(GetUserAdmin(client), Admin_Generic, Access_Effective) && Style == STYLE_NORMAL)
 	{
 		decl String:sSync[32];
 		Format(sSync, sizeof(sSync), "\n \nSync: %.1f%%", StringToFloat(info[10]));
@@ -2389,12 +2499,12 @@ DB_ShowTimeAtRank(client, const String:MapName[], rank, Type, Style)
 	WritePackCell(pack, Style);
 	
 	decl String:query[512];
-	FormatEx(query, sizeof(query), "SELECT t2.User, t1.Time, t1.Jumps, t1.Strafes, t1.Points, t1.Timestamp FROM times AS t1, players AS t2 WHERE t1.MapID=(SELECT MapID FROM maps WHERE MapName='%s') AND t1.PlayerID=t2.PlayerID AND t1.Type=%d AND t1.Style=%d ORDER BY t1.Time LIMIT %d, 1",
+	Format(query, sizeof(query), "SELECT t2.User, t1.Time, t1.Jumps, t1.Strafes, t1.Points, t1.Timestamp FROM times AS t1, players AS t2 WHERE t1.MapID=(SELECT MapID FROM maps WHERE MapName='%s') AND t1.PlayerID=t2.PlayerID AND t1.Type=%d AND t1.Style=%d ORDER BY t1.Time LIMIT %d, 1",
 		MapName,
 		Type,
 		Style,
 		rank-1);
-	SQL_TQuery(g_DB,DB_ShowTimeAtRank_Callback1, query, pack);
+	SQL_TQuery(g_DB, DB_ShowTimeAtRank_Callback1, query, pack);
 }
 
 public DB_ShowTimeAtRank_Callback1(Handle:owner, Handle:hndl, String:error[], any:pack)
@@ -2403,7 +2513,7 @@ public DB_ShowTimeAtRank_Callback1(Handle:owner, Handle:hndl, String:error[], an
 	{		
 		ResetPack(pack);
 		new client = ReadPackCell(pack);
-		new rank   = ReadPackCell(pack);
+		ReadPackCell(pack);
 		new Type   = ReadPackCell(pack);
 		new Style  = ReadPackCell(pack);
 		
@@ -2428,14 +2538,11 @@ public DB_ShowTimeAtRank_Callback1(Handle:owner, Handle:hndl, String:error[], an
 			
 			if(Style == STYLE_WONLY)
 			{
-				PrintColorText(client, "%s%s%s%s%s holds map rank %s%d%s with time %s%s%s\n(%s%d%s jumps, %s%f%s points)\nDate: %s%s %s%s.",
+				PrintColorText(client, "%s%s%s%s%s has time %s%s%s\n(%s%d%s jumps, %s%.1f%s points)\nDate: %s%s %s%s.",
 					g_msg_start,
 					g_msg_varcol,
 					(Type==0)?sStyle[Style]:"[BONUS] ",
 					sUserName,
-					g_msg_textcol,
-					g_msg_varcol,
-					rank,
 					g_msg_textcol,
 					g_msg_varcol,
 					sfTime,
@@ -2453,14 +2560,11 @@ public DB_ShowTimeAtRank_Callback1(Handle:owner, Handle:hndl, String:error[], an
 			}
 			else
 			{
-				PrintColorText(client, "%s%s%s%s%s holds map rank %s%d%s with time %s%s%s\n(%s%d%s jumps, %s%d%s strafes, %s%f%s points)\nDate: %s%s %s%s.",
+				PrintColorText(client, "%s%s%s%s%s has time %s%s%s\n(%s%d%s jumps, %s%d%s strafes, %s%f%s points)\nDate: %s%s %s%s.",
 					g_msg_start,
 					g_msg_varcol,
 					(Type==0)?sStyle[Style]:"[BONUS] ",
 					sUserName,
-					g_msg_textcol,
-					g_msg_varcol,
-					rank,
 					g_msg_textcol,
 					g_msg_varcol,
 					sfTime,
@@ -2485,6 +2589,8 @@ public DB_ShowTimeAtRank_Callback1(Handle:owner, Handle:hndl, String:error[], an
 	{
 		LogError(error);
 	}
+	
+	CloseHandle(pack);
 }
 
 DB_ShowTime(client, target, const String:MapName[], Type, Style)
@@ -2495,12 +2601,24 @@ DB_ShowTime(client, target, const String:MapName[], Type, Style)
 	WritePackCell(pack, Type);
 	WritePackCell(pack, Style);
 	
-	decl String:query[512];
-	Format(query, sizeof(query), "SELECT * FROM times WHERE MapID=(SELECT MapID FROM maps WHERE MapName='%s') AND Type=%d AND Style=%d ORDER BY Time",
-		MapName,
-		Type,
-		Style);
-		
+	new PlayerID = GetClientID(target);
+	
+	decl String:query[800];
+	FormatEx(query, sizeof(query), "SELECT (SELECT count(*) FROM times WHERE Time<=(SELECT Time FROM times WHERE MapID=(SELECT MapID FROM maps WHERE MapName='%s') AND Type=%d AND Style=%d AND PlayerID=%d) AND MapID=(SELECT MapID FROM maps WHERE MapName='%s') AND Type=%d AND Style=%d) AS Rank, (SELECT count(*) FROM times WHERE MapID=(SELECT MapID FROM maps WHERE MapName='%s') AND Type=%d AND Style=%d) AS Timescount, Time, Jumps, Strafes, Points, Timestamp FROM times WHERE MapID=(SELECT MapID FROM maps WHERE MapName='%s') AND Type=%d AND Style=%d AND PlayerID=%d", 
+		MapName, 
+		Type, 
+		Style, 
+		PlayerID, 
+		MapName, 
+		Type, 
+		Style, 
+		MapName, 
+		Type, 
+		Style, 
+		MapName, 
+		Type, 
+		Style, 
+		PlayerID);	
 	SQL_TQuery(g_DB, DB_ShowTime_Callback1, query, pack);
 }
 
@@ -2518,99 +2636,95 @@ public DB_ShowTime_Callback1(Handle:owner, Handle:hndl, String:error[], any:pack
 		
 		if(IsClientInGame(client) && IsClientInGame(target) && TargetID)
 		{
-			new rows 	= SQL_GetRowCount(hndl);
-			
 			new const String:sStyleString[3][] = {"", "[SIDEWAYS] ", "[W-ONLY] "};
-			decl String:sTime[32], String:sDate[32], String:sDateDay[32], String:sName[MAX_NAME_LENGTH], bool:bHasTime;
+			decl String:sTime[32], String:sDate[32], String:sDateDay[32], String:sName[MAX_NAME_LENGTH];
 			GetClientName(target, sName, sizeof(sName));
 			
-			if(rows > 0)
+			if(SQL_GetRowCount(hndl) == 1)
 			{
-				for(new i=1; i<=rows; i++)
+				SQL_FetchRow(hndl);
+				new Rank 		 = SQL_FetchInt(hndl, 0);
+				new Timescount   = SQL_FetchInt(hndl, 1);
+				new Float:Time 	 = SQL_FetchFloat(hndl, 2);
+				new Jumps 		 = SQL_FetchInt(hndl, 3);
+				new Strafes 	 = SQL_FetchInt(hndl, 4);
+				new Float:Points = SQL_FetchFloat(hndl, 5);
+				new TimeStamp 	 = SQL_FetchInt(hndl, 6);
+				
+				FormatPlayerTime(Time, sTime, sizeof(sTime), false, 1);
+				FormatTime(sDate, sizeof(sDate), "%x", TimeStamp);
+				FormatTime(sDateDay, sizeof(sDateDay), "%X", TimeStamp);
+				
+				if(Style != STYLE_WONLY)
 				{
-					SQL_FetchRow(hndl);
+					PrintColorText(client, "%s%s%s%s %shas time %s%s%s (%s%d%s / %s%d%s)",
+						g_msg_start,
+						g_msg_varcol,
+						(Type==0)?sStyleString[Style]:"[BONUS] ",
+						sName,
+						g_msg_textcol,
+						g_msg_varcol,
+						sTime,
+						g_msg_textcol,
+						g_msg_varcol,
+						Rank,
+						g_msg_textcol,
+						g_msg_varcol,
+						Timescount,
+						g_msg_textcol);
 					
-					if(SQL_FetchInt(hndl, 4) == TargetID)
-					{
-						bHasTime = true;
-						
-						new Float:Time 	 = SQL_FetchFloat(hndl, 5);
-						new Jumps 		 = SQL_FetchInt(hndl, 6);
-						new Strafes 	 = SQL_FetchInt(hndl, 7);
-						new Float:Points = SQL_FetchFloat(hndl, 8);
-						new TimeStamp 	 = SQL_FetchInt(hndl, 9);
-						
-						FormatPlayerTime(Time, sTime, sizeof(sTime), false, 1);
-						FormatTime(sDate, sizeof(sDate), "%x", TimeStamp);
-						FormatTime(sDateDay, sizeof(sDateDay), "%X", TimeStamp);
-						
-						if(Style != STYLE_WONLY)
-						{
-							PrintColorText(client, "%s%s%s%s %shas time %s%s%s (%s%d%s / %s%d%s) \nDate: %s%s %s%s\n(%s%d%s jumps, %s%d%s strafes, %s%4.1f%s points)",
-								g_msg_start,
-								g_msg_varcol,
-								(Type==0)?sStyleString[Style]:"[BONUS] ",
-								sName,
-								g_msg_textcol,
-								g_msg_varcol,
-								sTime,
-								g_msg_textcol,
-								g_msg_varcol,
-								i,
-								g_msg_textcol,
-								g_msg_varcol,
-								rows,
-								g_msg_textcol,
-								g_msg_varcol,
-								sDate,
-								sDateDay,
-								g_msg_textcol,
-								g_msg_varcol,
-								Jumps,
-								g_msg_textcol,
-								g_msg_varcol,
-								Strafes,
-								g_msg_textcol,
-								g_msg_varcol,
-								Points,
-								g_msg_textcol);
-						}
-						else
-						{
-							PrintColorText(client, "%s%s[W-ONLY] %s %shas time %s%s%s ranked (%s%d%s / %s%d%s) \nDate: %s%s %s%s\n(%s%d%s jumps and %s%4.1f%s points)",
-								g_msg_start,
-								g_msg_varcol,
-								sName,
-								g_msg_textcol,
-								g_msg_varcol,
-								sTime,
-								g_msg_textcol,
-								g_msg_varcol,
-								i,
-								g_msg_textcol,
-								g_msg_varcol,
-								rows,
-								g_msg_textcol,
-								g_msg_varcol,
-								sDate,
-								sDateDay,
-								g_msg_textcol,
-								g_msg_varcol,
-								Jumps,
-								g_msg_textcol,
-								g_msg_varcol,
-								Points,
-								g_msg_textcol);
-						}
-					}
+					PrintColorText(client, "%sDate: %s%s %s",
+						g_msg_textcol,
+						g_msg_varcol,
+						sDate,
+						sDateDay);
+					
+					PrintColorText(client, "%s(%s%d%s jumps, %s%d%s strafes, and %s%4.1f%s points)",
+						g_msg_textcol,
+						g_msg_varcol,
+						Jumps,
+						g_msg_textcol,
+						g_msg_varcol,
+						Strafes,
+						g_msg_textcol,
+						g_msg_varcol,
+						Points,
+						g_msg_textcol);
+				}
+				else
+				{
+					PrintColorText(client, "%s%s[W-ONLY] %s %shas time %s%s%s (%s%d%s / %s%d%s)",
+						g_msg_start,
+						g_msg_varcol,
+						sName,
+						g_msg_textcol,
+						g_msg_varcol,
+						sTime,
+						g_msg_textcol,
+						g_msg_varcol,
+						Rank,
+						g_msg_textcol,
+						g_msg_varcol,
+						Timescount,
+						g_msg_textcol);
+					
+					PrintColorText(client, "%sDate: %s%s %s",
+						g_msg_textcol,
+						g_msg_varcol,
+						sDate,
+						sDateDay);
+					
+					PrintColorText(client, "%s(%s%d%s jumps and %s%4.1f%s points)",
+						g_msg_textcol,
+						g_msg_varcol,
+						Jumps,
+						g_msg_textcol,
+						g_msg_varcol,
+						Points,
+						g_msg_textcol);
 				}
 			}
 			else
-			{
-				bHasTime = false;
-			}
-			
-			if(!bHasTime)
 			{
 				PrintColorText(client, "%s%s%s%s %shas no time on the map.",
 					g_msg_start,
@@ -2625,57 +2739,8 @@ public DB_ShowTime_Callback1(Handle:owner, Handle:hndl, String:error[], any:pack
 	{
 		LogError(error);
 	}
-}
-
-DB_LoadWorldRecordInfo()
-{
-	decl String:query[512];
-	Format(query, sizeof(query), "SELECT Type, Style, t2.User, MIN(Time) FROM times AS t1, players AS t2 WHERE MapID=(SELECT MapID FROM maps WHERE MapName='%s') AND t1.PlayerID=t2.PlayerID GROUP BY Type, Style", g_mapname);
-	SQL_TQuery(g_DB, DB_LoadWorldRecordInfo_Callback, query);
-}
-
-public DB_LoadWorldRecordInfo_Callback(Handle:owner, Handle:hndl, String:error[], any:data)
-{
-	// Reset hint text wr info
-	for(new i=0; i<3; i++)
-	{
-		Format(g_record[i], 48, "No record");
-		g_WorldRecord[i] = 0.0;
-	}
-	Format(g_brecord, sizeof(g_brecord), "No record");
-	g_bWorldRecord = 0.0;
 	
-	// get new hint text wr info
-	if(hndl != INVALID_HANDLE)
-	{
-		new rows = SQL_GetRowCount(hndl), Type, Style, Float:time;
-		decl String:name[MAX_NAME_LENGTH], String:timebuffer[32];
-		
-		for(new i=0; i<rows; i++)
-		{
-			SQL_FetchRow(hndl);
-			Type  = SQL_FetchInt(hndl, 0);
-			Style = SQL_FetchInt(hndl, 1);
-			SQL_FetchString(hndl, 2, name, sizeof(name));
-			time  = SQL_FetchFloat(hndl, 3);
-			
-			FormatPlayerTime(time, timebuffer, sizeof(timebuffer), false, 2);
-			if(Type == 0)
-			{
-				Format(g_record[Style], 48, "%s (%s)", timebuffer, name);
-				g_WorldRecord[Style] = time;
-			}
-			else if(Type == 1)
-			{
-				Format(g_brecord, sizeof(g_brecord), "%s (%s)", timebuffer, name);
-				g_bWorldRecord = time;
-			}
-		}
-	}
-	else
-	{
-		LogError(error);
-	}
+	CloseHandle(pack);
 }
 
 DB_GetTopOneTimesCount(client)
@@ -2766,7 +2831,7 @@ public DB_DeleteRecord_Callback1(Handle:owner, Handle:hndl, String:error[], any:
 			return;
 		}
 		
-		decl String:query[512];
+		decl String:query[700];
 		Format(query, sizeof(query), "DELETE FROM times WHERE MapID=(SELECT MapID FROM maps WHERE MapName='%s') AND Type=%d AND Style=%d AND Time BETWEEN (SELECT t1.Time FROM (SELECT * FROM times) AS t1 WHERE t1.MapID=(SELECT MapID FROM maps WHERE MapName='%s') AND t1.Type=%d AND t1.Style=%d ORDER BY t1.Time LIMIT %d, 1) AND (SELECT t2.Time FROM (SELECT * FROM times) AS t2 WHERE t2.MapID=(SELECT MapID FROM maps WHERE MapName='%s') AND t2.Type=%d AND t2.Style=%d ORDER BY t2.Time LIMIT %d, 1)",
 			g_mapname,
 			Type,
@@ -2783,6 +2848,7 @@ public DB_DeleteRecord_Callback1(Handle:owner, Handle:hndl, String:error[], any:
 	}
 	else
 	{
+		CloseHandle(data);
 		LogError(error);
 	}
 }
@@ -2791,16 +2857,6 @@ public DB_DeleteRecord_Callback2(Handle:owner, Handle:hndl, String:error[], any:
 {
 	if(hndl != INVALID_HANDLE)
 	{
-		for(new i=1; i<=MaxClients; i++)
-		{
-			if(GetClientID(i) != 0 && IsClientInGame(i))
-			{
-				DB_LoadPlayerInfo(i);
-			}
-		}
-		
-		DB_LoadTimes();
-		
 		// Get pack data
 		ResetPack(data);
 		ReadPackCell(data);
@@ -2809,30 +2865,58 @@ public DB_DeleteRecord_Callback2(Handle:owner, Handle:hndl, String:error[], any:
 		new RecordOne   = ReadPackCell(data);
 		new RecordTwo   = ReadPackCell(data);
 		
+		new PlayerID;
+		for(new client=1; client<=MaxClients; client++)
+		{
+			PlayerID = GetClientID(client);
+			if(GetClientID(client) != 0 && IsClientInGame(client))
+			{
+				for(new idx=RecordOne-1; idx<RecordTwo; idx++)
+				{
+					if(Type == TIMER_MAIN)
+					{
+						if(GetArrayCell(g_hTimes[Style], idx, 0) == PlayerID)
+						{
+							g_times[Style][client] = 0.0;
+							Format(g_sTime[Style][client], 48, "Best: No time");
+						}
+					}
+					else
+					{
+						if(GetArrayCell(g_hTimes[Style], idx, 0) == PlayerID)
+						{
+							g_btimes[client] = 0.0;
+							Format(g_sBTime[client], 48, "Best: No time");
+						}
+					}
+				}
+			}
+		}
+		
+		DB_LoadTimes();
+		
 		// If the top time was deleted
 		if(RecordOne <= 1 <= RecordTwo)
-		{
-			// Reload record info for displaying to players
-			DB_LoadWorldRecordInfo();
-			
+		{			
 			// Delete ghost if it's main timer on normal style
 			if(Type == TIMER_MAIN && Style == STYLE_NORMAL)
 			{
 				DeleteGhost();
 			}
 		}
-			
 	}
 	else
 	{
 		LogError(error);
 	}
+	
+	CloseHandle(data);
 }
 
 DB_LoadTimes()
 {	
 	decl String:query[512];
-	Format(query, sizeof(query), "SELECT * FROM times WHERE MapID=(SELECT MapID FROM maps WHERE MapName='%s') ORDER BY Type, Style, Time",
+	Format(query, sizeof(query), "SELECT t1.rownum, t1.MapID, t1.Type, t1.Style, t1.PlayerID, t1.Time, t1.Jumps, t1.Strafes, t1.Points, t1.Timestamp, t2.User FROM times AS t1, players AS t2 WHERE MapID=(SELECT MapID FROM maps WHERE MapName='%s') AND t1.PlayerID=t2.PlayerID ORDER BY Type, Style, Time",
 		g_mapname);
 	SQL_TQuery(g_DB, LoadTimes_Callback, query);
 }
@@ -2843,12 +2927,28 @@ public LoadTimes_Callback(Handle:owner, Handle:hndl, String:error[], any:data)
 	{
 		for(new i=0; i<3; i++)
 		{
-			g_hTimes[i] = CreateArray(6, 1);
+			if(g_hTimes[i] != INVALID_HANDLE)
+				ClearArray(g_hTimes[i]);
+			else
+				g_hTimes[i]      = CreateArray(6, 1);
+			
+			if(g_hTimesUsers[i] != INVALID_HANDLE)
+				ClearArray(g_hTimesUsers[i]);
+			else
+				g_hTimesUsers[i] = CreateArray(ByteCountToCells(MAX_NAME_LENGTH), 0);
 		}
 		
-		g_hBTimes = CreateArray(6, 1);
+		if(g_hBTimes != INVALID_HANDLE)
+			ClearArray(g_hBTimes);
+		else
+			g_hBTimes      = CreateArray(6, 1);
 		
-		new rows = SQL_GetRowCount(hndl), Type, Style, iSize;
+		if(g_hBTimesUsers != INVALID_HANDLE)
+			ClearArray(g_hBTimesUsers);
+		else
+			g_hBTimesUsers = CreateArray(ByteCountToCells(MAX_NAME_LENGTH), 0);
+		
+		new rows = SQL_GetRowCount(hndl), Type, Style, iSize, String:sUser[MAX_NAME_LENGTH];
 		
 		for(new i=0; i<rows; i++)
 		{
@@ -2856,6 +2956,8 @@ public LoadTimes_Callback(Handle:owner, Handle:hndl, String:error[], any:data)
 			
 			Type  = SQL_FetchInt(hndl, eType);
 			Style = SQL_FetchInt(hndl, eStyle);
+			
+			SQL_FetchString(hndl, 10, sUser, sizeof(sUser));
 			
 			if(Type == TIMER_MAIN)
 			{
@@ -2867,6 +2969,8 @@ public LoadTimes_Callback(Handle:owner, Handle:hndl, String:error[], any:data)
 				SetArrayCell(g_hTimes[Style], iSize-1, SQL_FetchInt(hndl, eStrafes), 3);
 				SetArrayCell(g_hTimes[Style], iSize-1, SQL_FetchFloat(hndl, ePoints), 4);
 				SetArrayCell(g_hTimes[Style], iSize-1, SQL_FetchInt(hndl, eTimestamp), 5);
+				
+				PushArrayString(g_hTimesUsers[Style], sUser);
 				
 				ResizeArray(g_hTimes[Style], iSize+1);
 			}
@@ -2881,13 +2985,61 @@ public LoadTimes_Callback(Handle:owner, Handle:hndl, String:error[], any:data)
 				SetArrayCell(g_hBTimes, iSize-1, SQL_FetchFloat(hndl, ePoints), 4);
 				SetArrayCell(g_hBTimes, iSize-1, SQL_FetchInt(hndl, eTimestamp), 5);
 				
+				PushArrayString(g_hBTimesUsers, sUser);
+				
 				ResizeArray(g_hBTimes, iSize+1);
 			}
 		}
+		
+		LoadWorldRecordInfo();
 	}
 	else
 	{
 		LogError(error);
+	}
+}
+
+LoadWorldRecordInfo()
+{
+	new const String:sStyle[3][] = {"", "SW", "W"};
+	decl String:sUser[MAX_NAME_LENGTH];
+	new iSize;
+	for(new i=0; i<3; i++)
+	{
+		iSize = GetArraySize(g_hTimes[i]);
+		if(iSize > 1)
+		{
+			g_WorldRecord[i] = GetArrayCell(g_hTimes[i], 0, 1);
+			
+			FormatPlayerTime(g_WorldRecord[i], g_record[i], 48, false, 1);
+			GetArrayString(g_hTimesUsers[i], 0, sUser, MAX_NAME_LENGTH);
+			
+			Format(g_record[i], 48, "WR%s: %s (%s)", sStyle[i], g_record[i], sUser);
+		}
+		else
+		{
+			g_WorldRecord[i] = 0.0;
+			
+			Format(g_record[i], 48, "WR%s: No record", sStyle[i]);
+		}
+	}
+	
+	iSize = GetArraySize(g_hBTimes);
+	
+	if(iSize > 1)
+	{
+		g_bWorldRecord = GetArrayCell(g_hBTimes, 0, 1);
+		
+		FormatPlayerTime(g_bWorldRecord, g_brecord, 48, false, 1);
+		GetArrayString(g_hBTimesUsers, 0, sUser, MAX_NAME_LENGTH);
+		
+		Format(g_brecord, 48, "BWR: %s (%s)", g_brecord, sUser);
+	}
+	else
+	{
+		g_bWorldRecord = 0.0;
+		
+		Format(g_brecord, 48, "BWR: No record");
 	}
 }
 
@@ -2959,7 +3111,9 @@ CheckSync(client, buttons, Float:vel[3], Float:angles[3])
 	
 	if(Direction == 1 && GetClientVelocity(client, true, true, false) != 0)
 	{	
-		if(!(GetEntityFlags(client) & FL_ONGROUND))
+		new flags = GetEntityFlags(client);
+		new MoveType:movetype = GetEntityMoveType(client);
+		if(!(flags & (FL_ONGROUND|FL_INWATER)) && (movetype != MOVETYPE_LADDER))
 		{
 			// Normalize difference
 			new Float:fAngleDiff = angles[1] - g_fOldAngle[client];
