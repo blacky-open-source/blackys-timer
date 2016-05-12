@@ -4,13 +4,14 @@
 
 public Plugin:myinfo = 
 {
-	name = "bTimes-zones",
+	name = "[bTimes] zones",
 	author = "blacky",
 	description = "Used to create zones for the bTimes mod",
 	version = VERSION,
 	url = "http://steamcommunity.com/id/blaackyy/"
 }
 
+#include <sourcemod>
 #include <bTimes-zones>
 #include <bTimes-timer>
 #include <bTimes-random>
@@ -20,8 +21,8 @@ public Plugin:myinfo =
 #define MAX_ANTI_CHEATS 64
 #define MAX_FREE_STYLE 64
 
-new 	String:g_mapname[64],
-	g_mapteam,
+new 	String:g_sMapName[64],
+	//g_mapteam,
 	Float:g_spawnpos[3];
  
 new 	Float:g_main[2][8][3],	
@@ -53,8 +54,7 @@ new Float:g_freestyle[MAX_FREE_STYLE][8][3],
 	g_freestyle_BeamSprite,
 	g_freestyle_color[4] = {0, 0, 255, 255},
 	g_freestyle_count,
-	g_freestyle_setup[MAXPLAYERS+1] = {-1, ...},
-	g_freestyle_info[MAXPLAYERS+1];
+	g_freestyle_setup[MAXPLAYERS+1] = {-1, ...};
 
 new 	g_setup[MAXPLAYERS+1] = {-1, ...};
 
@@ -79,6 +79,9 @@ new 	Handle:g_hMaxPrespeed,
 	Handle:g_hBonusEndColor,
 	Handle:g_hAntiCheatColor,
 	Handle:g_hFreeStyleColor;
+	
+// Forwards
+new	Handle:g_fwdOnZonesLoaded;
 
 public OnPluginStart()
 {
@@ -89,13 +92,13 @@ public OnPluginStart()
 	HookEvent("player_spawn", Event_PlayerSpawn, EventHookMode_Post);
 	
 	// Timer cvars
-	g_hMaxPrespeed 		= CreateConVar("timer_maxprespeed", "290.0", "Max prespeed in starting zones.", 0, true, 0.0, false);
-	g_hMainStartColor 	= CreateConVar("timer_mainstartcolor", "0 255 0 255", "Red/Green/Blue/Alpha of main start zone.");
-	g_hMainEndColor		= CreateConVar("timer_mainendcolor", "255 0 0 255", "Red/Green/Blue/Alpha of main end zone.");
-	g_hBonusStartColor	= CreateConVar("timer_bonusstartcolor", "0 255 0 255", "Red/Green/Blue/Alpha of bonus start zone.");
-	g_hBonusEndColor	= CreateConVar("timer_bonusendcolor", "255 0 0 255", "Red/Green/Blue/Alpha of bonus end zone.");
-	g_hAntiCheatColor	= CreateConVar("timer_anticheatcolor", "255 255 0 255", "Red/Green/Blue/Alpha of anti-cheat zones.");
-	g_hFreeStyleColor	= CreateConVar("timer_freestylecolor", "0 0 255 255", "Red/Green/Blue/Alpha of free style zones.");
+	g_hMaxPrespeed     = CreateConVar("timer_maxprespeed", "290.0", "Max prespeed in starting zones.", 0, true, 0.0, false);
+	g_hMainStartColor  = CreateConVar("timer_mainstartcolor", "0 255 0 255", "Red/Green/Blue/Alpha of main start zone.");
+	g_hMainEndColor    = CreateConVar("timer_mainendcolor", "255 0 0 255", "Red/Green/Blue/Alpha of main end zone.");
+	g_hBonusStartColor = CreateConVar("timer_bonusstartcolor", "0 255 0 255", "Red/Green/Blue/Alpha of bonus start zone.");
+	g_hBonusEndColor   = CreateConVar("timer_bonusendcolor", "255 0 0 255", "Red/Green/Blue/Alpha of bonus end zone.");
+	g_hAntiCheatColor  = CreateConVar("timer_anticheatcolor", "255 255 0 255", "Red/Green/Blue/Alpha of anti-cheat zones.");
+	g_hFreeStyleColor  = CreateConVar("timer_freestylecolor", "0 0 255 255", "Red/Green/Blue/Alpha of free style zones.");
 	
 	// Hook timer cvars
 	HookConVarChange(g_hMaxPrespeed, OnMaxPrespeedChanged);
@@ -113,15 +116,15 @@ public OnPluginStart()
 	RegAdminCmd("sm_zones", Cmd_OpenZoneMenu, ADMFLAG_CHEATS, "Open zone control menu");
 
 	// Player Commands
-	RegConsoleCmd("sm_b", TeleportToBonus, "Teleports you to the bonus area");
-	RegConsoleCmd("sm_bonus", TeleportToBonus, "Teleports you to the bonus area");
-	RegConsoleCmd("sm_br", TeleportToBonus, "Teleports you to the bonus area");
-	RegConsoleCmd("sm_r", TeleportToMain, "Teleports you to the starting zone");
-	RegConsoleCmd("sm_restart", TeleportToMain, "Teleports you to the starting zone");
-	RegConsoleCmd("sm_respawn", TeleportToMain, "Teleports you to the starting zone");
-	RegConsoleCmd("sm_start", TeleportToMain, "Teleports you to the starting zone");
-	RegConsoleCmd("sm_end", TeleportToMainEnd, "Teleports your to the end zone");
-	RegConsoleCmd("sm_endb", TeleportToBonusEnd, "Teleports you to the bonus end zone");
+	RegConsoleCmdEx("sm_b", TeleportToBonus, "Teleports you to the bonus area");
+	RegConsoleCmdEx("sm_bonus", TeleportToBonus, "Teleports you to the bonus area");
+	RegConsoleCmdEx("sm_br", TeleportToBonus, "Teleports you to the bonus area");
+	RegConsoleCmdEx("sm_r", TeleportToMain, "Teleports you to the starting zone");
+	RegConsoleCmdEx("sm_restart", TeleportToMain, "Teleports you to the starting zone");
+	RegConsoleCmdEx("sm_respawn", TeleportToMain, "Teleports you to the starting zone");
+	RegConsoleCmdEx("sm_start", TeleportToMain, "Teleports you to the starting zone");
+	RegConsoleCmdEx("sm_end", TeleportToMainEnd, "Teleports your to the end zone");
+	RegConsoleCmdEx("sm_endb", TeleportToBonusEnd, "Teleports you to the bonus end zone");
 	
 	// Command listeners for easier team joining
 	AddCommandListener(Command_JoinTeam, "jointeam");
@@ -135,6 +138,10 @@ public APLRes:AskPluginLoad2(Handle:myself, bool:late, String:error[], err_max)
 	CreateNative("IsInAStartZone", Native_IsInAStartZone);
 	CreateNative("IsInAFreeStyleZone", Native_IsInAFreeStyleZone);
 	CreateNative("GoToStart", Native_GoToStart);
+	CreateNative("ZoneExists", Native_ZoneExists);
+	
+	// Forwards
+	g_fwdOnZonesLoaded = CreateGlobalForward("OnZonesLoaded", ET_Event);
 	
 	return APLRes_Success;
 }
@@ -156,17 +163,17 @@ public OnMapStart()
 	// Set map team and get spawn position
 	if(t != -1)
 	{
-		g_mapteam = 2;
+		//g_mapteam = 2;
 		GetEntPropVector(t, Prop_Send, "m_vecOrigin", g_spawnpos);
 	}
 	else
 	{
-		g_mapteam = 3;
+		//g_mapteam = 3;
 		GetEntPropVector(ct, Prop_Send, "m_vecOrigin", g_spawnpos);
 	}
 	
 	// For sql related stuff, get map name
-	GetCurrentMap(g_mapname, sizeof(g_mapname));
+	GetCurrentMap(g_sMapName, sizeof(g_sMapName));
 
 	// Needed textures for zones
 	g_main_BeamSprite  		= PrecacheModel("materials/sprites/trails/bluelightning.vmt");
@@ -176,7 +183,7 @@ public OnMapStart()
 	g_anticheat_BeamSprite 	= PrecacheModel("materials/sprites/trails/bluelightning.vmt");
 	g_anticheat_HaloSprite 	= PrecacheModel("materials/sprites/halo01.vmt");
 	g_freestyle_BeamSprite 	= PrecacheModel("materials/sprites/trails/bluelightning.vmt");
-	g_freestyle_HaloSprite	= PrecacheModel("materials/sprites/halo01.vmt");
+	g_freestyle_HaloSprite		= PrecacheModel("materials/sprites/halo01.vmt");
 	
 	// Add needed textures to downloads table
 	AddFileToDownloadsTable("materials/sprites/trails/bluelightning.vmt");
@@ -379,21 +386,28 @@ public Action:Command_JoinTeam(client, const String:command[], argc)
 		new team = StringToInt(sArg);
 		
 		// if team is t/ct/auto assign
-		if(team == 2 || team == 3 || team == 0)
+		if(team == 2 || team == 3)
 		{
 			// spawn player to map team
-			CS_SwitchTeam(client, g_mapteam);
+			CS_SwitchTeam(client, team);
+			CS_RespawnPlayer(client);
+		}
+		else if(team == 0)
+		{
+			CS_SwitchTeam(client, GetRandomInt(2, 3));
 			CS_RespawnPlayer(client);
 		}
 		else if(team == 1) // if team is spectators
 		{
 			// change player to spectator team
+			ForcePlayerSuicide(client);
 			ChangeClientTeam(client, 1);
 		}
 	}
 	else // if player used the spectate command
 	{
 		// change player to spectate
+		ForcePlayerSuicide(client);
 		ChangeClientTeam(client, 1);
 	}
 	return Plugin_Handled;
@@ -469,6 +483,19 @@ public Native_OpenZoneMenu(Handle:plugin, numParams)
 	SetMenuExitButton(menu, true);
 	
 	DisplayMenu(menu, GetNativeCell(1), MENU_TIME_FOREVER);
+}
+
+public Native_ZoneExists(Handle:plugin, numParams)
+{
+	new Type = GetNativeCell(1);
+	
+	if(Type == TIMER_MAIN)
+		return g_main_ready[0];
+	
+	if(Type == TIMER_BONUS)
+		return g_bonus_ready[0];
+	
+	return false;
 }
 
 public Native_MainZoneExists(Handle:plugin, numParams)
@@ -741,10 +768,15 @@ public Action:TeleportToMain(client, args)
 	{
 		StopTimer(client);
 		TeleportToZone(client, g_main[0][0], g_main[0][7]);
+		
+		if(g_main_ready[1] == true)
+		{
+			StartTimer(client, TIMER_MAIN);
+		}
 	}
 	else
 	{
-		PrintColorText(client, "%s%sThe start zone hasn't been added yet",
+		PrintColorText(client, "%s%sThe start zone isn't ready yet",
 			g_msg_start,
 			g_msg_textcol);
 	}
@@ -775,6 +807,11 @@ public Action:TeleportToBonus(client, args)
 	{
 		StopTimer(client);
 		TeleportToZone(client, g_bonus[0][0], g_bonus[0][7]);
+		
+		if(g_bonus_ready[1] == true)
+		{
+			StartTimer(client, TIMER_BONUS);
+		}
 	}
 	else
 	{
@@ -1138,6 +1175,14 @@ public Action:LoopBeams(Handle:timer, any:data)
 	g_update       = !g_update;
 }
 
+public bool:TraceRayDontHitSelf(entity, mask, any:data)
+{
+	if(entity == data)
+		return false;
+	
+	return true;
+}
+
 /*
 * Connects to the database
 */
@@ -1161,7 +1206,7 @@ DB_DeleteZone(Type)
 {
 	decl String:query[512], String:mapname[64];
 	GetCurrentMap(mapname, sizeof(mapname));
-	Format(query, sizeof(query), "SELECT MapID FROM maps WHERE MapName='%s'", mapname);
+	Format(query, sizeof(query), "SELECT MapID FROM maps WHERE MapName='%s' LIMIT 0, 1", mapname);
 	SQL_TQuery(g_DB, DB_DeleteZone_Callback1, query, Type);
 }
 
@@ -1205,7 +1250,7 @@ DB_DeleteAntiCheatZone(Zone)
 {
 	decl String:query[512], String:mapname[64];
 	GetCurrentMap(mapname, sizeof(mapname));
-	Format(query, sizeof(query), "SELECT MapID FROM maps WHERE MapName='%s'", mapname);
+	Format(query, sizeof(query), "SELECT MapID FROM maps WHERE MapName='%s' LIMIT 0, 1", mapname);
 	SQL_TQuery(g_DB, DB_DeleteAntiCheatZone_Callback1, query, Zone);
 }
 
@@ -1255,7 +1300,7 @@ DB_DeleteFreeStyleZone(Zone)
 	
 	GetCurrentMap(mapname, sizeof(mapname));
 	
-	Format(query, sizeof(query), "SELECT MapID FROM maps WHERE MapName='%s'", mapname);
+	Format(query, sizeof(query), "SELECT MapID FROM maps WHERE MapName='%s' LIMIT 0, 1", mapname);
 	SQL_TQuery(g_DB, DB_DeleteFreeStyleZone_Callback1, query, Zone);
 }
 
@@ -1315,7 +1360,7 @@ DB_AddZone(ZoneType, Float:point[8][3])
 	
 	GetCurrentMap(mapname, sizeof(mapname));
 	
-	Format(query, sizeof(query), "SELECT MapID FROM maps WHERE MapName='%s'", mapname);
+	Format(query, sizeof(query), "SELECT MapID FROM maps WHERE MapName='%s' LIMIT 0, 1", mapname);
 	SQL_TQuery(g_DB, DB_AddZone_Callback1, query, data);
 }
 
@@ -1369,8 +1414,8 @@ DB_LoadZones()
 {	
 	// Select zones query
 	decl String:query[512];
-	Format(query, sizeof(query), "SELECT point00, point01, point02, point10, point11, point12, Type FROM zones WHERE MapID=(SELECT MapID FROM maps WHERE MapName='%s')", 
-		g_mapname);
+	Format(query, sizeof(query), "SELECT point00, point01, point02, point10, point11, point12, Type FROM zones WHERE MapID=(SELECT MapID FROM maps WHERE MapName='%s' LIMIT 0, 1)", 
+		g_sMapName);
 	SQL_TQuery(g_DB, DB_LoadZones_Callback, query);
 }
 
@@ -1425,6 +1470,9 @@ public DB_LoadZones_Callback(Handle:owner, Handle:hndl, const String:error[], an
 				CreateZonePoints(g_freestyle[g_freestyle_count++]);
 			}
 		}
+		
+		Call_StartForward(g_fwdOnZonesLoaded);
+		Call_Finish();
 	}
 	else
 	{
@@ -1449,7 +1497,9 @@ public Action:OnPlayerRunCmd(client, &buttons, &impulse, Float:vel[3], Float:ang
 						if(GetEntityMoveType(client) != MOVETYPE_NOCLIP)
 							TeleportEntity(client, NULL_VECTOR, NULL_VECTOR, Float:{0, 0, 0});
 					}
-					StartTimer(client, TIMER_MAIN);
+					
+					if(GetEntityFlags(client) & FL_ONGROUND)
+						StartTimer(client, TIMER_MAIN);
 				}
 				else if(g_main_info[client][1]) // Is in end zone
 				{
@@ -1468,7 +1518,9 @@ public Action:OnPlayerRunCmd(client, &buttons, &impulse, Float:vel[3], Float:ang
 						if(GetEntityMoveType(client) != MOVETYPE_NOCLIP)
 							TeleportEntity(client, NULL_VECTOR, NULL_VECTOR, Float:{0, 0, 0});
 					}
-					StartTimer(client, TIMER_BONUS);
+					
+					if(GetEntityFlags(client) & FL_ONGROUND)
+						StartTimer(client, TIMER_BONUS);
 				}
 				else if(g_bonus_info[client][1]) // Is in end zone
 				{

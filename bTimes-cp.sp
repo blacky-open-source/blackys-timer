@@ -4,7 +4,7 @@
 
 public Plugin:myinfo = 
 {
-	name = "bTimes-cp",
+	name = "[bTimes] cp",
 	author = "blacky",
 	description = "Checkpoints plugin for the timer",
 	version = VERSION,
@@ -37,12 +37,12 @@ new	String:g_msg_start[128],
 
 public OnPluginStart()
 {
-	RegConsoleCmd("sm_cp", SM_CP, "Opens the checkpoint menu.");
-	RegConsoleCmd("sm_checkpoint", SM_CP, "Opens the checkpoint menu.");
-	RegConsoleCmd("sm_tele", SM_Tele, "Teleports you to the specified checkpoint.");
-	RegConsoleCmd("sm_tp", SM_Tele, "Teleports you to the specified checkpoint.");
-	RegConsoleCmd("sm_save", SM_Save, "Saves a new checkpoint.");
-	RegConsoleCmd("sm_tpto", SM_TpTo, "Teleports you to a player.");
+	RegConsoleCmdEx("sm_cp", SM_CP, "Opens the checkpoint menu.");
+	RegConsoleCmdEx("sm_checkpoint", SM_CP, "Opens the checkpoint menu.");
+	RegConsoleCmdEx("sm_tele", SM_Tele, "Teleports you to the specified checkpoint.");
+	RegConsoleCmdEx("sm_tp", SM_Tele, "Teleports you to the specified checkpoint.");
+	RegConsoleCmdEx("sm_save", SM_Save, "Saves a new checkpoint.");
+	RegConsoleCmdEx("sm_tpto", SM_TpTo, "Teleports you to a player.");
 	
 	// Makes FindTarget() work properly
 	LoadTranslations("common.phrases");
@@ -97,7 +97,18 @@ public Action:SM_TpTo(client, args)
 				{
 					if(IsPlayerAlive(target))
 					{
-						SendTpToRequest(client, target);
+						if(IsFakeClient(target))
+						{
+							new Float:pos[3];
+							GetEntPropVector(target, Prop_Send, "m_vecOrigin", pos);
+							
+							StopTimer(client);
+							TeleportEntity(client, pos, NULL_VECTOR, NULL_VECTOR);
+						}
+						else
+						{
+							SendTpToRequest(client, target);
+						}
 					}
 					else
 					{
@@ -170,7 +181,18 @@ public Menu_Tpto(Handle:menu, MenuAction:action, param1, param2)
 					{
 						if(IsPlayerAlive(param1))
 						{
-							SendTpToRequest(param1, target);
+							if(IsFakeClient(target))
+							{
+								new Float:pos[3];
+								GetEntPropVector(target, Prop_Send, "m_vecOrigin", pos);
+								
+								StopTimer(param1);
+								TeleportEntity(param1, pos, NULL_VECTOR, NULL_VECTOR);
+							}
+							else
+							{
+								SendTpToRequest(param1, target);
+							}
 						}
 						else
 						{
@@ -425,18 +447,22 @@ public Menu_Teleport(Handle:menu, MenuAction:action, param1, param2)
 
 OpenDeleteMenu(client)
 {
-	new Handle:menu = CreateMenu(Menu_Delete);
-	SetMenuTitle(menu, "Delete");
-	
-	decl String:display[16], String:info[8];
 	if(g_cpcount[client] != 0)
 	{
+		new Handle:menu = CreateMenu(Menu_Delete);
+		SetMenuTitle(menu, "Delete");
+		
+		decl String:display[16], String:info[8];
 		for(new i=0; i < g_cpcount[client]; i++)
 		{
 			Format(display, sizeof(display), "Delete %d", i+1);
 			IntToString(i, info, sizeof(info));
 			AddMenuItem(menu, info, display);
 		}
+		
+		SetMenuExitBackButton(menu, true);
+		SetMenuExitButton(menu, true);
+		DisplayMenu(menu, client, MENU_TIME_FOREVER);
 	}
 	else
 	{
@@ -446,29 +472,18 @@ OpenDeleteMenu(client)
 		OpenCheckpointMenu(client);
 	}
 	
-	SetMenuExitBackButton(menu, true);
-	SetMenuExitButton(menu, true);
-	DisplayMenu(menu, client, MENU_TIME_FOREVER);
+	
 }
 
 public Menu_Delete(Handle:menu, MenuAction:action, param1, param2)
 {
 	if (action == MenuAction_Select)
 	{
-		new String:info[32];
+		decl String:info[32];
 		GetMenuItem(menu, param2, info, sizeof(info));
 		
-		decl String:infoString[8];
-		for(new i=0; i < g_cpcount[param1]; i++)
-		{
-			IntToString(i, infoString, sizeof(infoString));
-			if(StrEqual(info, infoString))
-			{
-				DeleteCheckpoint(param1, i);
-				OpenDeleteMenu(param1);
-				break;
-			}
-		}
+		DeleteCheckpoint(param1, StringToInt(info));
+		OpenDeleteMenu(param1);
 	}
 	else if (action == MenuAction_Cancel)
 	{
@@ -507,31 +522,44 @@ public Action:SM_Save(client, argS)
 
 SaveCheckpoint(client)
 {
-	if(g_cpcount[client] < 10)
+	decl String:sMap[32];
+	GetCurrentMap(sMap, sizeof(sMap));
+	
+	if(StrContains(sMap, "bhop_exodus") == -1)
 	{
-		GetEntPropVector(client, Prop_Send, "m_vecOrigin", g_cp[client][g_cpcount[client]][0]);
-		g_cp[client][g_cpcount[client]][1][0] = GetEntPropFloat(client, Prop_Send, "m_vecVelocity[0]");
-		g_cp[client][g_cpcount[client]][1][1] = GetEntPropFloat(client, Prop_Send, "m_vecVelocity[1]");
-		g_cp[client][g_cpcount[client]][1][2] = GetEntPropFloat(client, Prop_Send, "m_vecVelocity[2]");
-		GetClientEyeAngles(client, g_cp[client][g_cpcount[client]][2]);
-		
-		g_HasLastSaved[client] = true;
-		g_LastSaved[client] = g_cpcount[client];
-		
-		g_cpcount[client]++;
-		
-		PrintColorText(client, "%s%sCheckpoint %s%d%s saved.", 
-			g_msg_start,
-			g_msg_textcol,
-			g_msg_varcol,
-			g_cpcount[client],
-			g_msg_textcol);
+		if(g_cpcount[client] < 10)
+		{
+			GetEntPropVector(client, Prop_Send, "m_vecOrigin", g_cp[client][g_cpcount[client]][0]);
+			g_cp[client][g_cpcount[client]][1][0] = GetEntPropFloat(client, Prop_Send, "m_vecVelocity[0]");
+			g_cp[client][g_cpcount[client]][1][1] = GetEntPropFloat(client, Prop_Send, "m_vecVelocity[1]");
+			g_cp[client][g_cpcount[client]][1][2] = GetEntPropFloat(client, Prop_Send, "m_vecVelocity[2]");
+			GetClientEyeAngles(client, g_cp[client][g_cpcount[client]][2]);
+			
+			g_HasLastSaved[client] = true;
+			g_LastSaved[client]    = g_cpcount[client];
+			
+			g_cpcount[client]++;
+			
+			PrintColorText(client, "%s%sCheckpoint %s%d%s saved.", 
+				g_msg_start,
+				g_msg_textcol,
+				g_msg_varcol,
+				g_cpcount[client],
+				g_msg_textcol);
+		}
+		else
+		{
+			PrintColorText(client, "%s%sYou have too many checkpoints.",
+				g_msg_start,
+				g_msg_textcol);
+		}
 	}
 	else
 	{
-		PrintColorText(client, "%s%sYou have too many checkpoints.",
+		PrintColorText(client, "%s%sYou can't save checkpoints on %s to prevent server crashes.",
 			g_msg_start,
-			g_msg_textcol);
+			g_msg_textcol,
+			sMap);
 	}
 }
 
@@ -580,7 +608,7 @@ TeleportToCheckpoint(client, cpnum)
 			TeleportEntity(client, NULL_VECTOR, g_cp[client][cpnum][2], NULL_VECTOR);
 		
 		g_HasLastUsed[client] = true;
-		g_LastUsed[client] = cpnum;
+		g_LastUsed[client]    = cpnum;
 	}
 	else
 	{

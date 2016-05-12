@@ -1,25 +1,22 @@
-#define VERSION "1.3"
+#include <console>
 
-// Timer enums
-enum
-{
-	TIMER_MAIN,
-	TIMER_BONUS,
-	TIMER_ANY
-};
+#define VERSION "1.6.1"
 
-// Style enums
-enum
-{
-	STYLE_NORMAL,
-	STYLE_SIDEWAYS,
-	STYLE_WONLY
-};
+#define MAX_TYPES 2
 
-enum
-{
-	ALL = -1
-};
+#define TIMER_MAIN 0
+#define TIMER_BONUS 1
+#define TIMER_ANY 2
+
+#define MAX_STYLES 5
+
+#define STYLE_NORMAL 0
+#define STYLE_SIDEWAYS 1
+#define STYLE_WONLY 2
+#define STYLE_STAMINA 3
+#define STYLE_HALFSIDEWAYS 4
+
+#define ALL -1
 
 enum
 {
@@ -43,6 +40,12 @@ enum
 * @return			Client's player id.
 */
 native GetClientID(client);
+
+// A better name for GetClientID function
+stock GetPlayerID(client)
+{
+	return GetClientID(client);
+}
 
 /*
 * Get a client's current session playtime.
@@ -71,15 +74,23 @@ native bool:IsSpamming(client);
 */
 native SetIsSpamming(client, Float:BlockTime);
 
+native RegisterCommand(const String:sCommand[], const String:sDescription[]);
+
+stock RegConsoleCmdEx(const String:sCommand[], ConCmd:callback, const String:sDescription[])
+{
+	RegConsoleCmd(sCommand, callback, sDescription);
+	
+	RegisterCommand(sCommand, sDescription);
+}
 // Core forwards
 
 /*
-* 
+* Called when a map's MapID is gauranteed to be in the database
 */
 forward OnMapIDPostCheck();
 
 /*
-* 
+* Called when a player's PlayerID is retrieved and gauranteed to be in the database
 */
 forward OnPlayerIDLoaded(client);
 
@@ -131,11 +142,11 @@ stock FormatPlayerTime(Float:Time, String:result[], maxlength, bool:showDash, pr
 	decl String:sPrecision[16];
 	
 	if(precision == 0)
-		Format(sPrecision, sizeof(sPrecision), "%04.1f", seconds);
+		Format(sPrecision, sizeof(sPrecision), (hours > 0 || minutes > 0)?"%04.1f":"%.1f", seconds);
 	else if(precision == 1)
-		Format(sPrecision, sizeof(sPrecision), "%06.3f", seconds);
+		Format(sPrecision, sizeof(sPrecision), (hours > 0 || minutes > 0)?"%06.3f":"%.3f", seconds);
 	else if(precision == 2)
-		Format(sPrecision, sizeof(sPrecision), "%09.6f", seconds);
+		Format(sPrecision, sizeof(sPrecision), (hours > 0 || minutes > 0)?"%09.6f":"%.6f", seconds);
 	
 	if(hours > 0)
 		Format(result, maxlength, "%d:%02d:%s", hours, minutes, sPrecision);
@@ -143,32 +154,6 @@ stock FormatPlayerTime(Float:Time, String:result[], maxlength, bool:showDash, pr
 		Format(result, maxlength, "%d:%s", minutes, sPrecision);
 	else
 		Format(result, maxlength, "%s", sPrecision);
-}
-
-
-stock FormatPlayerTimeEx(Float:time, String:buffer[], maxlength, const String:precision[], bool:showdash)
-{
-	if(time <= 0.0 && showdash == true)
-	{
-		Format(buffer, maxlength, "-");
-		return;
-	}
-	
-	new hours     = RoundToFloor(time/3600);
-	time          -= hours*3600;
-	new minutes   = RoundToFloor(time/60);
-	time        -= minutes*60;
-	new Float:seconds = time;
-	
-	decl String:sPrecision[16];
-	Format(sPrecision, sizeof(sPrecision), "%%sf", precision, seconds);
-	
-	if(hours > 0)
-		Format(buffer, maxlength, "%d:%02d:%s", hours, minutes, sPrecision);
-	else if(minutes > 0)
-		Format(buffer, maxlength, "%d:%s", minutes, sPrecision);
-	else
-		Format(buffer, maxlength, "%s", sPrecision);
 }
 
 stock Float:GetClientVelocity(client, bool:UseX, bool:UseY, bool:UseZ)
@@ -192,3 +177,78 @@ stock Float:GetClientVelocity(client, bool:UseX, bool:UseY, bool:UseZ)
 	
 	return GetVectorLength(vVel);
 }
+
+stock GetTypeName(Type, String:sType[], maxlength, bool:bBlankIfMain = false)
+{
+	if((Type == TIMER_MAIN && bBlankIfMain == true) || Type == ALL)
+	{
+		FormatEx(sType, maxlength, "");
+		return;
+	}
+	
+	decl String:sTypeList[MAX_TYPES][] = {"Main", "Bonus"};
+	
+	FormatEx(sType, maxlength, sTypeList[Type]);
+}
+
+stock GetTypeAbbr(Type, String:sAbbr[], maxlength, bool:bBlankIfMain = false)
+{
+	if((Type == TIMER_MAIN && bBlankIfMain == true) || Type == ALL)
+	{
+		FormatEx(sAbbr, maxlength, "");
+		return;
+	}
+	
+	decl String:sAbbrList[MAX_TYPES][] = {"", "b"};
+	
+	FormatEx(sAbbr, maxlength, sAbbrList[Type]);
+}
+
+stock GetStyleName(Style, String:sStyle[], maxlength)
+{
+	if(Style == ALL)
+	{
+		FormatEx(sStyle, maxlength, "");
+		return;
+	}
+	
+	decl String:sStyleList[MAX_STYLES][] = {"Normal", "Sideways", "W-Only", "Stamina", "Half-Sideways"};
+	
+	FormatEx(sStyle, maxlength, sStyleList[Style]);
+}
+
+stock GetStyleAbbr(Style, String:sAbbr[], maxlength)
+{
+	if(Style == ALL)
+	{
+		FormatEx(sAbbr, maxlength, "");
+		return;
+	}
+	
+	decl String:sAbbrList[MAX_STYLES][] = {"n", "sw", "w", "stam", "hsw"};
+	
+	FormatEx(sAbbr, maxlength, sAbbrList[Style]);
+}
+
+stock StringToUpper(String:buffer[])
+{
+	new len = strlen(buffer);
+	
+	for(new idx = 0; idx < len; idx++)
+	{
+		buffer[idx] = CharToUpper(buffer[idx]);
+	}
+}
+
+stock AddBracketsToString(String:buffer[], maxlength)
+{
+	if(strlen(buffer) > 0)
+		Format(buffer, maxlength, "[%s]", buffer);
+}
+
+stock AddSpaceToEnd(String:buffer[], maxlength)
+{
+	if(strlen(buffer) > 0)
+		Format(buffer, maxlength, "%s ", buffer);
+}
+
